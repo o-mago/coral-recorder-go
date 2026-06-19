@@ -1,0 +1,50 @@
+# Compiled binaries and executables
+/client/client
+/client/main
+/server/server
+/server/main
+*.exe
+*.exe~
+*.dll
+*.so
+*.dylib
+*.test
+*.out
+
+# Local data recordings and generated transcripts
+meeting.wav
+server/meeting.wav
+transcricao_*.md
+server/transcricao_*.md
+Transcript_Meeting_*.md
+server/Transcript_Meeting_*.md
+
+# Downloaded TFLite models
+/server/models/
+
+# Python caching and environments
+__pycache__/
+*.py[cod]
+*$py.class
+.venv/
+venv/
+env/
+.env
+
+# OS-specific files
+.DS_Store
+.DS_Store?
+._*
+.Spotlight-V100
+.Trashes
+ehthumbs.db
+Thumbs.db
+
+# IDE and Editor configurations
+.vscode/
+.idea/
+*.suo
+*.ntvs*
+*.njsproj
+*.sln
+*.swp
