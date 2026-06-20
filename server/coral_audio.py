@@ -14,9 +14,9 @@ CHUNK_SAMPLES = 7680 # ~0.48 seconds of audio
 CHUNK_BYTES = CHUNK_SAMPLES * SAMPLE_WIDTH
 
 # Model Files
-MODEL_YAMNET = "models/yamnet.tflite"
+MODEL_YAMNET = "models/yamnet.vmfb" if os.path.exists("models/yamnet.vmfb") else "models/yamnet.tflite"
 MODEL_COMMANDS_CPU = "models/voice_commands.tflite"
-MODEL_COMMANDS_TPU = "models/voice_commands_edgetpu.tflite"
+MODEL_COMMANDS_TPU = "models/voice_commands.vmfb" if os.path.exists("models/voice_commands.vmfb") else "models/voice_commands_edgetpu.tflite"
 
 # YAMNet Classes of Interest (based on Audioset Ontology)
 CLASS_SPEECH = 0
@@ -36,8 +36,71 @@ try:
 except ImportError:
     pass
 
+class IreeInterpreter:
+    """Wrapper that mimics standard TFLite Interpreter API using iree.runtime for Synaptics Astra NPU."""
+    def __init__(self, model_path):
+        import iree.runtime as ireert
+        driver = "hal"
+        try:
+            self.config = ireert.Config(driver)
+        except Exception:
+            driver = "local-task"
+            self.config = ireert.Config(driver)
+        
+        sys.stderr.write(f"IREE/Torq Configured with driver: {driver}\n")
+        self.ctx = ireert.SystemContext(config=self.config)
+        with open(model_path, "rb") as f:
+            flatbuffer_data = f.read()
+            self.vm_module = ireert.VmModule.from_flatbuffer(self.config.vm_instance, flatbuffer_data)
+        self.ctx.add_vm_module(self.vm_module)
+        
+        # Discover module name
+        self.module_name = "module"
+        for name in dir(self.ctx.modules):
+            if not name.startswith("_") and name != "modules":
+                self.module_name = name
+                break
+        
+        self.invoke_func = getattr(self.ctx.modules, self.module_name)["main"]
+        self.is_yamnet = "yamnet" in model_path.lower()
+        self.input_data = None
+        self.output_data = None
+
+    def allocate_tensors(self):
+        pass
+
+    def get_input_details(self):
+        if self.is_yamnet:
+            return [{'index': 0, 'shape': (15600,), 'dtype': np.float32, 'quantization': (1.0, 0.0)}]
+        else:
+            return [{'index': 0, 'shape': (1, 16000), 'dtype': np.float32, 'quantization': (1.0, 0.0)}]
+
+    def get_output_details(self):
+        return [{'index': 0, 'dtype': np.float32, 'quantization': (1.0, 0.0)}]
+
+    def set_tensor(self, index, data):
+        self.input_data = data
+
+    def invoke(self):
+        raw_result = self.invoke_func(self.input_data)
+        self.output_data = raw_result.to_host()
+
+    def get_tensor(self, index):
+        if hasattr(self.output_data, "ndim") and self.output_data.ndim == 1:
+            return [self.output_data]
+        elif isinstance(self.output_data, (list, tuple)) and not isinstance(self.output_data[0], (list, tuple, np.ndarray)):
+            return [self.output_data]
+        return self.output_data
+
 def load_tflite_interpreter(model_path):
-    """Loads the TFLite interpreter, trying to load with Edge TPU delegate first, fallback to CPU."""
+    """Loads the TFLite interpreter (or IREE interpreter for .vmfb), trying to load with Edge TPU delegate first, fallback to CPU."""
+    if model_path.endswith(".vmfb"):
+        try:
+            return IreeInterpreter(model_path)
+        except Exception as e:
+            sys.stderr.write(f"Failed to load IREE model {model_path}: {e}\n")
+            return None
+
     try:
         import tflite_runtime.interpreter as tflite
         # Attempt to load using Edge TPU delegate if the model is compiled for Edge TPU

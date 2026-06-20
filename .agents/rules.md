@@ -20,6 +20,7 @@ These rules are enforced for any agent working in this repository.
 - All WAV writers, files, pipes, and network streams must be closed explicitly on finalization or exit to prevent resource leaks and guarantee files are complete before upload.
 - Temporary files uploaded to the Gemini File API must be deleted immediately after transcription via `client.DeleteFile`.
 
-## 5. Coral Edge TPU Optimization
-- **Edge TPU Prioritization**: Always prioritize offloading machine learning inferences (such as TFLite models for audio/speech commands and classifications) to the Coral Edge TPU whenever possible and when it makes technical sense.
-- **Hardware Limitations & Fallbacks**: Respect the hardware resource limits of the Coral Board (memory, thermals, and compiler constraint limits). Always design modular fallback layers (CPU models, RMS calculations) so the application remains robustly functional even if TPU libraries or hardware acceleration is not present.
+## 5. Coral Dev Board Hardware Target (Synaptics Astra SL2610)
+- **Target Hardware**: The target board is the **Synaptics Coral Dev Board Limited Edition 2GB (Google I/O Edition)**, powered by the **Synaptics Astra SL2610** SoC (Dual Core Arm Cortex-A55 & Cortex-M52) with an integrated **Synaptics Torq NPU** (a Google Coral NPU production implementation, 1 TOPS).
+- **Toolchain & Runtime**: Since the board utilizes the Torq NPU, models must be compiled to `.vmfb` format using the `torq-compile` compiler (based on MLIR/IREE) and executed using the `iree.runtime` Python bindings.
+- **Legacy & Fallback Layers**: Always maintain fallback layers (CPU execution of standard TFLite models using `tflite_runtime`, or RMS/energy-based detection) in the code. This ensures the code remains compatible with other standard platforms (like legacy Coral i.MX 8M Dev Boards, standard PCs, or macOS hosts) where the Astra NPU toolchain is not present.
