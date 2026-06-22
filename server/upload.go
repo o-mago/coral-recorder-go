@@ -130,10 +130,17 @@ func uploadAndTranscribe(ctx context.Context, filePath string, localEvents []str
 
 	// Upload to Google Drive
 	driveFileName := fmt.Sprintf("%s_Transcript_Meeting.md", timestamp)
-	errUpload := uploadToDrive(ctx, localMdFile, driveFileName)
+	errUpload := uploadToDrive(ctx, localMdFile, driveFileName, "text/markdown")
 	if errUpload != nil {
 		fmt.Printf("\nWarning: Failed to upload to Google Drive: %v\n", errUpload)
 		fmt.Printf("The transcript was generated successfully and is saved locally at: %s\n\n", localMdFile)
+	}
+
+	// Upload the temporary audio file to Google Drive as well
+	driveAudioName := fmt.Sprintf("%s_Audio_Meeting.wav", timestamp)
+	errAudioUpload := uploadToDrive(ctx, filePath, driveAudioName, "audio/wav")
+	if errAudioUpload != nil {
+		fmt.Printf("Warning: Failed to upload audio file to Google Drive: %v\n", errAudioUpload)
 	}
 
 	// Delete the local temporary audio file to free up space on the board
