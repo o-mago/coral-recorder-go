@@ -94,7 +94,31 @@ arecord -l
 # Expected: card 0: klamathasoc [klamath-asoc], device 0: dummy-dmic
 ```
 
-#### 4. On standard computers (macOS/Linux/Windows) to test on CPU
+#### 4. LED permissions on the Coral Dev Board
+The server controls the three onboard status LEDs (`green:status`, `red:status`, `blue:status`) by writing to `/sys/class/leds/*/brightness` via the Linux sysfs interface. By default these files are owned by `root` and only writable by root, so the server process (running as a regular user) must be granted write access.
+
+**Persistent fix — create a udev rule** (applied automatically on every boot):
+```bash
+cat > /etc/udev/rules.d/99-leds.rules << 'EOF'
+SUBSYSTEM=="leds", ACTION=="add", RUN+="/bin/chmod a+w /sys/class/leds/%k/brightness /sys/class/leds/%k/trigger"
+EOF
+```
+
+**Immediate fix** (takes effect right now, without rebooting):
+```bash
+chmod a+w \
+  /sys/class/leds/green:status/brightness \
+  /sys/class/leds/green:status/trigger \
+  /sys/class/leds/red:status/brightness \
+  /sys/class/leds/red:status/trigger \
+  /sys/class/leds/blue:status/brightness \
+  /sys/class/leds/blue:status/trigger
+```
+
+> [!NOTE]
+> The `chmod` above is lost on reboot. The udev rule ensures it is reapplied automatically whenever the LED devices are registered during boot. Both steps together are required for a permanent solution.
+
+#### 5. On standard computers (macOS/Linux/Windows) to test on CPU
 If you wish to test the server locally on your host PC:
 ```bash
 pip3 install ai-edge-litert numpy vosk
