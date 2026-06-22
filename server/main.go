@@ -75,6 +75,10 @@ func main() {
 		pythonExe = "env/bin/python3"
 	} else if _, err := os.Stat(".venv/bin/python3"); err == nil {
 		pythonExe = ".venv/bin/python3"
+	} else if _, err := os.Stat("../env/bin/python3"); err == nil {
+		pythonExe = "../env/bin/python3"
+	} else if _, err := os.Stat("../.venv/bin/python3"); err == nil {
+		pythonExe = "../.venv/bin/python3"
 	}
 	log.Printf("Starting local Python audio processor using: %s\n", pythonExe)
 
