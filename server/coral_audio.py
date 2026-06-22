@@ -267,15 +267,20 @@ def main():
                                 start_trigger_word = f"coral + {kw}"
                                 break
 
-                    # Check stop phrases
-                    for phrase in ["parar gravação", "parar gravacao", "terminar gravação", "terminar gravacao", "encerrar gravação", "encerrar gravacao"]:
-                        if phrase in text:
-                            stop_command = True
-                            stop_trigger_word = phrase
-                            break
-                    if not stop_command and text_clean in ["stop", "parar", "terminar", "encerrar"]:
-                        stop_command = True
-                        stop_trigger_word = text_clean
+                    # Check stop phrases (requires "coral" + a stop keyword)
+                    if "coral" in text:
+                        stop_keywords = [
+                            "parar gravação", "parar gravacao",
+                            "terminar gravação", "terminar gravacao",
+                            "encerrar gravação", "encerrar gravacao",
+                            "parar", "terminar", "encerrar",
+                            "stop"
+                        ]
+                        for kw in stop_keywords:
+                            if kw in text:
+                                stop_command = True
+                                stop_trigger_word = f"coral + {kw}"
+                                break
                 except Exception as e:
                     sys.stderr.write(f"Vosk inference error: {e}\n")
 
