@@ -32,7 +32,7 @@ func main() {
 	listFlag := flag.Bool("list", false, "List available audio input devices")
 	deviceFlag := flag.Int("device", -1, "Select input device index (default is default system input)")
 	serverFlag := flag.String("server", "localhost:5000", "UDP server address (ip:port)")
-	usbFlag := flag.Bool("usb", false, "Connect to Coral server via USB-C cable (uses virtual Ethernet IP 192.168.100.2:5000)")
+	usbFlag := flag.Bool("usb", true, "Connect to Coral server via USB-C cable (default: true)")
 	flag.Parse()
 
 	err := portaudio.Initialize()
