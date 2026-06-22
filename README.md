@@ -410,3 +410,83 @@ This will print a list of all detected devices on your computer.
 
 * **Acoustic Events**: Background sounds (e.g. laughter, clapping, coughing) detected by the YAMNet model on the Coral Board are printed on the server console in real-time and automatically integrated into the transcription report by Gemini (e.g., `[Risos]`, `[Palmas]`).
 
+
+---
+
+## Autostart on Boot (Systemd)
+
+To make the server run automatically when the Coral Dev Board boots up, you can configure a systemd service.
+
+### 1. Compile the Server Binary on the Board
+The systemd service runs the precompiled `coral-recorder` binary. Build it in the repository directory on the board:
+```bash
+cd ~/dev/coral-recorder-go/server
+PKG_CONFIG_PATH=/usr/local/lib/pkgconfig /home/mago/go/bin/go build -o coral-recorder .
+```
+
+### 2. Create the Systemd Service File
+Create a new unit file at `/etc/systemd/system/coral-recorder.service` with root privileges (using `sudo`):
+
+```ini
+[Unit]
+Description=Coral Recorder - Audio capture and Gemini transcription server
+After=network-online.target sound.target
+Wants=network-online.target
+
+[Service]
+Type=simple
+User=mago
+Group=mago
+SupplementaryGroups=audio
+WorkingDirectory=/home/mago/dev/coral-recorder-go/server
+Environment=PKG_CONFIG_PATH=/usr/local/lib/pkgconfig
+EnvironmentFile=-/home/mago/dev/coral-recorder-go/server/.env
+ExecStartPre=+/bin/chmod a+w /sys/class/leds/green:status/brightness /sys/class/leds/green:status/trigger /sys/class/leds/red:status/brightness /sys/class/leds/red:status/trigger /sys/class/leds/blue:status/brightness /sys/class/leds/blue:status/trigger
+ExecStart=/home/mago/dev/coral-recorder-go/server/coral-recorder
+Restart=on-failure
+RestartSec=5
+StandardOutput=journal
+StandardError=journal
+SyslogIdentifier=coral-recorder
+
+[Install]
+WantedBy=multi-user.target
+```
+
+> [!IMPORTANT]
+> - Do **not** set `Environment=LD_LIBRARY_PATH=/usr/local/lib` in this service file. The custom-compiled PortAudio library in `/usr/local/lib` may lack ALSA support, whereas the system library `/usr/lib/libportaudio.so.2` has full ALSA support and is loaded correctly by default.
+> - The `+` prefix before `/bin/chmod` in `ExecStartPre` tells systemd to run that specific permission-granting command with root privileges even though the main service runs as user `mago`.
+> - `SupplementaryGroups=audio` ensures the process inherits the permissions of the `audio` group to access ALSA soundcard device nodes in `/dev/snd/*`.
+
+### 3. Control the Service
+
+Reload the systemd daemon configuration, enable the service (to start on boot), and start it immediately:
+```bash
+sudo systemctl daemon-reload
+sudo systemctl enable coral-recorder
+sudo systemctl start coral-recorder
+```
+
+To stop the service and turn off the status LEDs:
+```bash
+sudo systemctl stop coral-recorder
+```
+
+To disable autostart:
+```bash
+sudo systemctl disable coral-recorder
+```
+
+### 4. Monitor and Troubleshoot
+
+Check the service status:
+```bash
+sudo systemctl status coral-recorder
+```
+
+Follow the logs in real-time (useful for checking transcription/upload progress and voice commands):
+```bash
+sudo journalctl -u coral-recorder -f
+```
+
+
