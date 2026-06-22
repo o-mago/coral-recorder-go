@@ -69,8 +69,16 @@ func main() {
 	defer conn.Close()
 	log.Println("UDP Server started on port 5000. Listening for client connections...")
 
-	// Start the local Python audio processor subprocess
-	cmd := exec.Command("python3", "coral_audio.py")
+	// Determine the python executable to use (check virtual environments first)
+	pythonExe := "python3"
+	if _, err := os.Stat("env/bin/python3"); err == nil {
+		pythonExe = "env/bin/python3"
+	} else if _, err := os.Stat(".venv/bin/python3"); err == nil {
+		pythonExe = ".venv/bin/python3"
+	}
+	log.Printf("Starting local Python audio processor using: %s\n", pythonExe)
+
+	cmd := exec.Command(pythonExe, "coral_audio.py")
 	cmd.Dir = "."
 	cmd.Stderr = os.Stderr
 
