@@ -392,16 +392,18 @@ This will print a list of all detected devices on your computer.
 
   | LED | Pattern | State | Description |
   |---|---|---|---|
-  | 🟢 **Green** | Solid ON | **Idle (Local)** | Standalone mode — monitoring local microphone, waiting for **"GO"** command (no errors) |
-  | 🟢+🔵 **Green+Blue** | Solid ON | **Idle (Network)** | Client-Server mode — waiting for client UDP stream, waiting for **"GO"** command (no errors) |
-  | 🟢 + 🔴 **Green + Blinking Red** | Solid Green, Blinking Red | **Idle (Local with Queue Errors)** | Standalone mode ready to record, but failed recordings are waiting in the queue |
-  | 🟢+🔵 + 🔴 **Cyan + Blinking Red** | Solid Cyan, Blinking Red | **Idle (Network with Queue Errors)** | Client-Server mode ready to connect, but failed recordings are waiting in the queue |
+  | 🟢 **Green** | Solid ON | **Idle (Local, Online)** | Standalone mode ready, local mic active, internet is available |
+  | 🟢+🔵 **Green+Blue** | Solid ON | **Idle (Network, Online)** | Client-Server mode ready, waiting for client UDP, internet is available |
+  | 🟢 + 🔴 **Green + Solid Red** | Solid Green, Solid Red | **Idle (Local, Offline)** | Standalone mode ready, but **no internet available** (turns Red+Green = Yellow) |
+  | 🟢+🔵 + 🔴 **Cyan + Solid Red** | Solid Cyan, Solid Red | **Idle (Network, Offline)** | Client-Server mode ready, but **no internet available** (turns Green+Blue+Red = White) |
+  | 🟢 + 🔴 **Green + Blinking Red** | Solid Green, Blinking Red | **Idle (Local with Queue Errors)** | Standalone mode ready to record, but failed recordings exist in queue (blinking red overrides solid offline red) |
+  | 🟢+🔵 + 🔴 **Cyan + Blinking Red** | Solid Cyan, Blinking Red | **Idle (Network with Queue Errors)** | Client-Server mode ready to connect, but failed recordings exist in queue (blinking red overrides solid offline red) |
   | 🔴 **Red** | Solid ON | **Recording** | Recording in progress (takes absolute priority) |
   | 🔵 + 🔴 **Blue + Blinking Red** | Solid Blue, Blinking Red | **Retrying Queue** | Actively re-processing and uploading failed recordings in the background |
   | 🔵 **Blue** | Solid ON | **Processing** | Actively uploading and transcribing a fresh session |
   | All | OFF | **Offline** | Server not running |
 
-  After a successful session finishes, the server automatically resets to its idle color (🟢 **Green** or 🟢+🔵 **Cyan**) and waits for the next **"GO"** command. If there are pending/failed uploads in the queue, the red LED will blink alongside the solid idle colors to indicate that it is ready for a new recording but still has unsent data. During background queue retries, the blue LED stays solid while the red LED blinks.
+  After a successful session finishes, the server automatically resets to its idle color depending on connection type and internet status. If there is no internet connection available, the Red LED lights up solid alongside the green or cyan idle states. If there are pending/failed uploads in the queue, the blinking red error pattern takes precedence over the solid offline red pattern, blinking to alert the user. During background queue retries, the blue LED stays solid while the red LED blinks.
 
 * **Diagnostics and Logs Flag (`-status`)**:
   To inspect the service status, local upload queue, and logs directly from the command line, run:

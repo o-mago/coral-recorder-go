@@ -1,6 +1,8 @@
 package main
 
 import (
+	"context"
+	"net/http"
 	"os"
 	"strings"
 	"sync"
@@ -38,7 +40,24 @@ var (
 	uploadingInProgress    bool
 	reprocessingInProgress bool
 	uploadingMutex         sync.Mutex
+	internetAvailable      = true
+	internetMutex          sync.Mutex
 )
+
+// SetInternetAvailable updates the internet availability status and refreshes LEDs.
+func SetInternetAvailable(available bool) {
+	internetMutex.Lock()
+	internetAvailable = available
+	internetMutex.Unlock()
+	TriggerLEDUpdate()
+}
+
+// GetInternetAvailable returns the current internet availability status.
+func GetInternetAvailable() bool {
+	internetMutex.Lock()
+	defer internetMutex.Unlock()
+	return internetAvailable
+}
 
 // SetAudioSource updates the active audio source (local mic vs external network) and refreshes LEDs.
 func SetAudioSource(source AudioSource) {
@@ -136,9 +155,45 @@ func hasPendingFiles() bool {
 	return false
 }
 
+// checkInternet performs a lightweight HTTP request to check if Google APIs are reachable.
+func checkInternet() bool {
+	client := &http.Client{
+		Timeout: 3 * time.Second,
+	}
+	req, err := http.NewRequest("HEAD", "https://generativelanguage.googleapis.com", nil)
+	if err != nil {
+		return false
+	}
+	resp, err := client.Do(req)
+	if err != nil {
+		return false
+	}
+	resp.Body.Close()
+	return true
+}
+
+// startInternetCheck periodically checks internet connectivity in the background.
+func startInternetCheck(ctx context.Context) {
+	ticker := time.NewTicker(5 * time.Second)
+	defer ticker.Stop()
+
+	// Initial check on startup
+	SetInternetAvailable(checkInternet())
+
+	for {
+		select {
+		case <-ctx.Done():
+			return
+		case <-ticker.C:
+			SetInternetAvailable(checkInternet())
+		}
+	}
+}
+
 // updateLED refreshes the physical LED states based on current server state and pending uploads.
 func updateLED() {
 	hasPending := hasPendingFiles()
+	netAvailable := GetInternetAvailable()
 
 	if currentServerState == StateRecording {
 		// 1. Recording: solid red only
@@ -146,7 +201,7 @@ func updateLED() {
 		ledAllOff()
 		ledSet(ledRed, true)
 	} else if reprocessingInProgress {
-		// 2. Reprocessing queue files with error: solid blue + blinking red
+		// 2. Reprocessing queue files with error: solid blue + blinking red (reprocessing implies error exists)
 		ledAllOff()
 		ledSet(ledBlue, true)
 		ledErrorBlinkStart()
@@ -156,7 +211,7 @@ func updateLED() {
 		ledAllOff()
 		ledSet(ledBlue, true)
 	} else {
-		// 4. Idle / Ready: green (or green+blue) solid, and red blinking if there are pending files
+		// 4. Idle / Ready: green (or green+blue) solid, and red blinking (if has errors) or solid (if no internet)
 		ledAllOff()
 		if currentAudioSource == SourceExternalNet {
 			ledSet(ledGreen, true)
@@ -166,9 +221,14 @@ func updateLED() {
 		}
 
 		if hasPending {
+			// Error has precedence: blink red alongside solid idle colors
 			ledErrorBlinkStart()
 		} else {
+			// No errors: check internet
 			ledErrorBlinkStop()
+			if !netAvailable {
+				ledSet(ledRed, true) // solid red alongside solid green/cyan
+			}
 		}
 	}
 }

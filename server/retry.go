@@ -8,6 +8,7 @@ import (
 	"path/filepath"
 	"sort"
 	"strings"
+	"sync"
 	"time"
 )
 
@@ -17,7 +18,45 @@ type PendingSession struct {
 	Events    []string `json:"events"`
 }
 
-var triggerRetryChan = make(chan struct{}, 1)
+var (
+	triggerRetryChan = make(chan struct{}, 1)
+	failedFiles      = make(map[string]bool)
+	failedFilesMutex sync.Mutex
+)
+
+func markFileFailed(path string) {
+	failedFilesMutex.Lock()
+	defer failedFilesMutex.Unlock()
+	failedFiles[path] = true
+}
+
+func isFileFailed(path string) bool {
+	failedFilesMutex.Lock()
+	defer failedFilesMutex.Unlock()
+	return failedFiles[path]
+}
+
+func clearFileFailed(path string) {
+	failedFilesMutex.Lock()
+	defer failedFilesMutex.Unlock()
+	delete(failedFiles, path)
+}
+
+func initFailedFiles() {
+	queueDir := getQueueDir()
+	files, err := os.ReadDir(queueDir)
+	if err != nil {
+		return
+	}
+	failedFilesMutex.Lock()
+	defer failedFilesMutex.Unlock()
+	for _, f := range files {
+		if !f.IsDir() && strings.HasPrefix(f.Name(), "pending_") && strings.HasSuffix(f.Name(), ".wav") {
+			path := filepath.Join(queueDir, f.Name())
+			failedFiles[path] = true
+		}
+	}
+}
 
 // triggerUploadRetry sends a non-blocking signal to the retry worker
 func triggerUploadRetry() {
@@ -34,6 +73,9 @@ func startRetryLoop(ctx context.Context) {
 	defer ticker.Stop()
 
 	log.Println("Background upload retry loop started.")
+
+	// Initialize files present at startup as failed/leftover
+	initFailedFiles()
 
 	// Run once immediately on startup to catch any leftover recordings from a power cycle
 	processQueue(ctx)
@@ -73,11 +115,10 @@ func processQueue(ctx context.Context) {
 
 	// Mark uploading in progress so LED displays blue
 	SetUploadingProgress(true)
-	defer SetUploadingProgress(false)
-
-	// Set reprocessing in progress so LED blinks blue
-	SetReprocessingProgress(true)
-	defer SetReprocessingProgress(false)
+	defer func() {
+		SetUploadingProgress(false)
+		SetReprocessingProgress(false)
+	}()
 
 	// Sort chronologically (alphabetical order of pending_YYYY-MM-DD_HH-MM-SS.wav is chronological)
 	sort.Strings(wavFiles)
@@ -86,6 +127,13 @@ func processQueue(ctx context.Context) {
 
 	for _, wavFile := range wavFiles {
 		log.Printf("Queue worker: uploading %s...", wavFile)
+
+		// Set LED states based on whether this file has failed before
+		if isFileFailed(wavFile) {
+			SetReprocessingProgress(true)
+		} else {
+			SetReprocessingProgress(false)
+		}
 
 		// Try to read the associated JSON events file
 		jsonPath := strings.TrimSuffix(wavFile, ".wav") + ".json"
@@ -103,6 +151,7 @@ func processQueue(ctx context.Context) {
 		err = uploadAndTranscribe(ctx, wavFile, events)
 		if err != nil {
 			log.Printf("Queue worker: failed to process %s: %v. Will retry later.", wavFile, err)
+			markFileFailed(wavFile)
 			// Trigger LED to start blinking (or ensure it is blinking)
 			TriggerLEDUpdate()
 			// Abort processing subsequent sessions to avoid parallel timeouts or rate limits when internet is down
@@ -110,6 +159,7 @@ func processQueue(ctx context.Context) {
 		}
 
 		log.Printf("Queue worker: successfully processed and deleted %s", wavFile)
+		clearFileFailed(wavFile)
 		// Trigger LED update (if queue becomes empty, it transitions back to ready/green)
 		TriggerLEDUpdate()
 	}

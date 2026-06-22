@@ -83,10 +83,11 @@ func main() {
 		os.Exit(0)
 	}
 
-	// Start background upload queue retry worker
+	// Start background upload queue retry worker and internet checker
 	ctx, cancel := context.WithCancel(context.Background())
 	defer cancel()
 	go startRetryLoop(ctx)
+	go startInternetCheck(ctx)
 
 	localMode := !*networkFlag
 
