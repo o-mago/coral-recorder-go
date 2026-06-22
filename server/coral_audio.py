@@ -264,15 +264,25 @@ def main():
                 # --- SPEECH COMMANDS INFERENCE (Wake Word / Controls - Fallback to English TFLite) ---
                 if interpreter_commands and not vosk_recognizer:
                     try:
-                        input_details = interpreter_commands.get_input_details()[0]
+                        input_details = interpreter_commands.get_input_details()
                         output_details = interpreter_commands.get_output_details()[0]
 
-                        inp_data = float_window.reshape(input_details['shape'])
-                        if input_details['dtype'] == np.int8:
-                            scale, zero_point = input_details['quantization']
-                            inp_data = (float_window / scale + zero_point).astype(np.int8).reshape(input_details['shape'])
+                        # Handle first input (audio samples)
+                        inp_details_0 = input_details[0]
+                        inp_data = float_window.reshape(inp_details_0['shape'])
+                        if inp_details_0['dtype'] == np.int8:
+                            scale, zero_point = inp_details_0['quantization']
+                            inp_data = (float_window / scale + zero_point).astype(np.int8).reshape(inp_details_0['shape'])
 
-                        interpreter_commands.set_tensor(input_details['index'], inp_data)
+                        interpreter_commands.set_tensor(inp_details_0['index'], inp_data)
+
+                        # Handle second input if present (often sample rate for speech commands models)
+                        if len(input_details) > 1:
+                            inp_details_1 = input_details[1]
+                            if inp_details_1['dtype'] == np.int32:
+                                sample_rate_val = np.array([SAMPLE_RATE], dtype=np.int32)
+                                interpreter_commands.set_tensor(inp_details_1['index'], sample_rate_val)
+
                         interpreter_commands.invoke()
 
                         cmd_out = interpreter_commands.get_tensor(output_details['index'])[0]
@@ -290,7 +300,9 @@ def main():
                             elif predicted_word == 'stop':
                                 stop_command = True
                     except Exception as e:
-                        pass
+                        if not hasattr(main, "_inference_error_logged"):
+                            sys.stderr.write(f"Warning: Speech Commands inference failed: {e}\n")
+                            main._inference_error_logged = True
 
                 # --- YAMNET INFERENCE (VAD & Event Classification) ---
                 if interpreter_yamnet:
