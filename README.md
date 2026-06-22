@@ -440,6 +440,8 @@ Group=mago
 SupplementaryGroups=audio
 WorkingDirectory=/home/mago/dev/coral-recorder-go/server
 Environment=PKG_CONFIG_PATH=/usr/local/lib/pkgconfig
+Environment=http_proxy=http://127.0.0.1:8082
+Environment=https_proxy=http://127.0.0.1:8082
 EnvironmentFile=-/home/mago/dev/coral-recorder-go/server/.env
 ExecStartPre=+/bin/chmod a+w /sys/class/leds/green:status/brightness /sys/class/leds/green:status/trigger /sys/class/leds/red:status/brightness /sys/class/leds/red:status/trigger /sys/class/leds/blue:status/brightness /sys/class/leds/blue:status/trigger
 ExecStart=/home/mago/dev/coral-recorder-go/server/coral-recorder
@@ -457,6 +459,7 @@ WantedBy=multi-user.target
 > - Do **not** set `Environment=LD_LIBRARY_PATH=/usr/local/lib` in this service file. The custom-compiled PortAudio library in `/usr/local/lib` may lack ALSA support, whereas the system library `/usr/lib/libportaudio.so.2` has full ALSA support and is loaded correctly by default.
 > - The `+` prefix before `/bin/chmod` in `ExecStartPre` tells systemd to run that specific permission-granting command with root privileges even though the main service runs as user `mago`.
 > - `SupplementaryGroups=audio` ensures the process inherits the permissions of the `audio` group to access ALSA soundcard device nodes in `/dev/snd/*`.
+> - `Environment=*_proxy=http://127.0.0.1:8082` routes internet traffic through the USB-C ADB reverse tunnel to the host PC proxy, allowing Gemini API uploads and Google Drive sync without complex network configuration on the host.
 
 ### 3. Control the Service
 
