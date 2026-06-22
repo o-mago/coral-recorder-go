@@ -79,7 +79,7 @@ func uploadAndTranscribe(ctx context.Context, filePath string, localEvents []str
 	// Pass the uploaded file's URI inside the prompt
 	prompt := []genai.Part{
 		genai.FileData{URI: uploadedFile.URI},
-		genai.Text("The audio of this meeting is in Brazilian Portuguese. Provide a complete transcription in Brazilian Portuguese separated by speaker (identifying them by their voices). Also create a structured executive summary and a clear list of action items (tasks) in Brazilian Portuguese. IMPORTANT: Completely ignore and omit any trailing voice commands used to stop the recording (such as 'coral, parar gravação', 'coral, terminar gravação', 'coral, encerrar gravação', 'coral, stop', 'stop', 'parar') from the very end of the transcription." + eventsPrompt),
+		genai.Text("The audio of this meeting is in Brazilian Portuguese. Provide a structured response in Brazilian Portuguese in the following order:\n1. A structured executive summary (Sumário Executivo).\n2. A clear list of action items/tasks (Itens de Ação).\n3. A complete transcription separated by speaker (Transcrição Detalhada, identifying them by their voices).\n\nIMPORTANT: Completely ignore and omit any trailing voice commands used to stop the recording (such as 'coral, parar gravação', 'coral, terminar gravação', 'coral, encerrar gravação', 'coral, stop', 'stop', 'parar') from the very end of the transcription." + eventsPrompt),
 	}
 
 	fmt.Println("Generating summary and action items...")
@@ -102,7 +102,7 @@ func uploadAndTranscribe(ctx context.Context, filePath string, localEvents []str
 		mdContent += "\n"
 	}
 	
-	mdContent += "## Summary & Action Items\n\n"
+	mdContent += "\n"
 
 	// Print the result to the console and append it to the Markdown file
 	fmt.Println("\n==================================================")
