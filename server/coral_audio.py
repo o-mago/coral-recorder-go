@@ -202,6 +202,7 @@ def main():
     # VAD Hangover parameters (prevents choppy recording by keeping buffer active)
     vad_hangover_chunks = 3 # Keep recording active for ~1.5s after speech stops
     vad_counter = 0
+    yamnet_counter = 0
 
     # RMS Threshold for Mock VAD
     MOCK_RMS_THRESHOLD = 300.0 
@@ -324,33 +325,40 @@ def main():
                             main._inference_error_logged = True
 
                 # --- YAMNET INFERENCE (VAD & Event Classification) ---
-                if interpreter_yamnet:
-                    try:
-                        input_details = interpreter_yamnet.get_input_details()[0]
-                        output_details = interpreter_yamnet.get_output_details()[0]
+                # Only run YAMNet during active recording to save CPU
+                # and run it every 2 chunks (~0.96s) since it covers a 0.975s window
+                if interpreter_yamnet and recording:
+                    yamnet_counter += 1
+                    if yamnet_counter % 2 == 0:
+                        try:
+                            input_details = interpreter_yamnet.get_input_details()[0]
+                            output_details = interpreter_yamnet.get_output_details()[0]
 
-                        # YAMNet expects 15600 samples (0.975 seconds)
-                        yamnet_input = float_window[:15600]
-                        
-                        interpreter_yamnet.set_tensor(input_details['index'], yamnet_input)
-                        interpreter_yamnet.invoke()
+                            # YAMNet expects 15600 samples (0.975 seconds)
+                            yamnet_input = float_window[:15600]
+                            
+                            interpreter_yamnet.set_tensor(input_details['index'], yamnet_input)
+                            interpreter_yamnet.invoke()
 
-                        yamnet_out = interpreter_yamnet.get_tensor(output_details['index'])[0]
-                        
-                        # 1. Voice Activity Detection (VAD)
-                        if yamnet_out[CLASS_SPEECH] > 0.45:
-                            speech_detected = True
+                            yamnet_out = interpreter_yamnet.get_tensor(output_details['index'])[0]
+                            
+                            # 1. Voice Activity Detection (VAD)
+                            if yamnet_out[CLASS_SPEECH] > 0.45:
+                                speech_detected = True
 
-                        # 2. Tag interesting acoustic events
-                        timestamp = time.strftime("%H:%M:%S")
-                        if yamnet_out[CLASS_LAUGHTER] > 0.25:
-                            print(json.dumps({"type": "event", "value": "laughter", "timestamp": timestamp}), flush=True)
-                        if yamnet_out[CLASS_CLAPPING] > 0.25 or yamnet_out[CLASS_APPLAUSE] > 0.25:
-                            print(json.dumps({"type": "event", "value": "clapping", "timestamp": timestamp}), flush=True)
-                        if yamnet_out[CLASS_COUGH] > 0.25:
-                            print(json.dumps({"type": "event", "value": "cough", "timestamp": timestamp}), flush=True)
-                    except Exception as e:
-                        pass
+                            # 2. Tag interesting acoustic events
+                            timestamp = time.strftime("%H:%M:%S")
+                            if yamnet_out[CLASS_LAUGHTER] > 0.25:
+                                print(json.dumps({"type": "event", "value": "laughter", "timestamp": timestamp}), flush=True)
+                            if yamnet_out[CLASS_CLAPPING] > 0.25 or yamnet_out[CLASS_APPLAUSE] > 0.25:
+                                print(json.dumps({"type": "event", "value": "clapping", "timestamp": timestamp}), flush=True)
+                            if yamnet_out[CLASS_COUGH] > 0.25:
+                                print(json.dumps({"type": "event", "value": "cough", "timestamp": timestamp}), flush=True)
+                        except Exception as e:
+                            pass
+                    else:
+                        # Skip inference on intermediate chunk, default to speech_detected=True to keep recording active
+                        speech_detected = True
 
             # --- RECORDER STATE MACHINE ---
 
