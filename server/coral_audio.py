@@ -242,9 +242,13 @@ def main():
                     if vosk_recognizer.AcceptWaveform(raw_chunk):
                         res = json.loads(vosk_recognizer.Result())
                         text = res.get("text", "").lower()
+                        if text:
+                            sys.stderr.write(f"[Vosk Speech] Full Result: '{text}'\n")
                     else:
                         res = json.loads(vosk_recognizer.PartialResult())
                         text = res.get("partial", "").lower()
+                        if text:
+                            sys.stderr.write(f"[Vosk Speech] Partial: '{text}'\n")
 
                     # 1. Full phrase matching for Portuguese to prevent false triggers during conversational talk
                     # 2. Isolated word matching for short keywords like "start"/"stop"/"go"/"parar"/"terminar"

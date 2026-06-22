@@ -253,45 +253,46 @@ This method bypasses the `0-byte` storage quota limit imposed on Google Service 
 2. Click **New Project** (Novo projeto) or open an existing script project.
 3. Paste the following JavaScript code in the editor (replacing all code):
    ```javascript
-   function doPost(e) {
-     try {
-       var data = JSON.parse(e.postData.contents);
-       var folderId = data.folderId;
-       var fileName = data.fileName;
-       var content = data.content;
-       var mimeType = data.mimeType || "text/markdown";
-       
-       var folder = DriveApp.getFolderById(folderId);
-       
-       // Check if the file already exists to avoid duplicates
-       var files = folder.getFilesByName(fileName);
-       while (files.hasNext()) {
-         files.next().setTrashed(true); // Move old version to trash
-       }
-       
-       var file;
-       if (mimeType === "audio/wav") {
-         // Decode the Base64 binary payload sent by the Go server
-         var bytes = Utilities.base64Decode(content);
-         var blob = Utilities.newBlob(bytes, mimeType, fileName);
-         file = folder.createFile(blob);
-       } else {
-         // Create a standard text/markdown file
-         file = folder.createFile(fileName, content, mimeType);
-       }
-       
-       return ContentService.createTextOutput(JSON.stringify({
-         status: "success",
-         fileId: file.getId()
-       })).setMimeType(ContentService.MimeType.JSON);
-       
-     } catch (error) {
-       return ContentService.createTextOutput(JSON.stringify({
-         status: "error",
-         message: error.toString()
-       })).setMimeType(ContentService.MimeType.JSON);
-     }
-   }
+    function doPost(e) {
+      try {
+        var data = JSON.parse(e.postData.contents);
+        var folderId = data.folderId;
+        var fileName = data.fileName;
+        var content = data.content;
+        var mimeType = data.mimeType || "text/markdown";
+        
+        var folder = DriveApp.getFolderById(folderId);
+        
+        // Check if the file already exists to avoid duplicates
+        var files = folder.getFilesByName(fileName);
+        while (files.hasNext()) {
+          files.next().setTrashed(true); // Move old version to trash
+        }
+        
+        var blob;
+        if (mimeType === "audio/wav") {
+          // Decode the Base64 binary payload sent by the Go server
+          var bytes = Utilities.base64Decode(content);
+          blob = Utilities.newBlob(bytes, mimeType, fileName);
+        } else {
+          // Create a standard text/markdown file using a blob
+          blob = Utilities.newBlob(content, mimeType, fileName);
+        }
+        
+        var file = folder.createFile(blob);
+        
+        return ContentService.createTextOutput(JSON.stringify({
+          status: "success",
+          fileId: file.getId()
+        })).setMimeType(ContentService.MimeType.JSON);
+        
+      } catch (error) {
+        return ContentService.createTextOutput(JSON.stringify({
+          status: "error",
+          message: error.toString()
+        })).setMimeType(ContentService.MimeType.JSON);
+      }
+    }
    ```
 4. Click **Save** (diskette icon).
 5. Click **Deploy** > **New deployment** (Nova implantação) in the top-right corner.
@@ -490,5 +491,4 @@ Follow the logs in real-time (useful for checking transcription/upload progress 
 ```bash
 sudo journalctl -u coral-recorder -f
 ```
-
 

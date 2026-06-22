@@ -177,20 +177,25 @@ func getUSBIP() string {
 	return "192.168.100.2"
 }
 
-// downmixToMono averages all interleaved channels into a single mono channel.
-// input layout: [ch0_f0, ch1_f0, ..., chN_f0, ch0_f1, ch1_f1, ...]
+// downmixToMono downmixes interleaved channels to a single mono channel.
+// To prevent extreme attenuation on virtual multi-channel devices (like Pipewire/BlackHole with 16 or 64 channels),
+// we only average the first 2 channels, ignoring extra silent channels.
 func downmixToMono(input []int16, numChannels int) []int16 {
 	if numChannels <= 1 {
 		return input
+	}
+	useChannels := numChannels
+	if useChannels > 2 {
+		useChannels = 2
 	}
 	numFrames := len(input) / numChannels
 	mono := make([]int16, numFrames)
 	for f := 0; f < numFrames; f++ {
 		var sum int32
-		for c := 0; c < numChannels; c++ {
+		for c := 0; c < useChannels; c++ {
 			sum += int32(input[f*numChannels+c])
 		}
-		mono[f] = int16(sum / int32(numChannels))
+		mono[f] = int16(sum / int32(useChannels))
 	}
 	return mono
 }
