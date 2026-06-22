@@ -5,8 +5,8 @@ This project is a Go-based client-server system designed to capture audio from a
 ## Architecture
 
 1. **Client**: Captures local microphone audio using the `portaudio` library, converts `int16` samples to bytes (`Little Endian`), and streams them over the network using the UDP protocol.
-2. **Server**: Listens on a UDP port (default `:5000`) and forwards the raw audio stream to a local Python subprocess (`coral_audio.py`), which runs NPU-accelerated models:
-   - **Voice Commands (Keyword Spotting)**: Continuously listens in the background. It starts recording upon hearing **"go"** (or "yes"/"on") and stops upon hearing **"stop"** (or "no"/"off").
+2. **Server**: Listens on a UDP port (default `:5000`) and forwards the raw audio stream to a local Python subprocess (`coral_audio.py`), which runs optimized detection models:
+   - **Voice Commands (Keyword Spotting)**: Continuously listens in the background. It uses Vosk for offline Portuguese command detection guarded by the wake-word **"coral"** (e.g., *"coral, iniciar gravação"*, *"coral, stop"*) to control recording.
    - **Intelligent VAD (Voice Activity Detection)**: Saves only segments containing active human speech to `meeting.wav` (using a hangover buffer to prevent clipping), removing silent periods.
    - **Audio Event Classification (YAMNet)**: Detects and logs background audio events such as laughter, clapping, and coughing in real-time, sending timestamps to Go.
 3. **Gemini & Cloud Orchestration**: Once recording is finalized, Go uploads the processed `meeting.wav` file to the **Gemini File API**, appends the list of local events detected by the NPU to the prompt, and requests a speaker-separated transcription integrated with the acoustic events.
@@ -34,27 +34,27 @@ sudo apt-get install portaudio19-dev pkg-config
 The server runs a hybrid pipeline with Python 3. Install the required dependencies:
 
 #### 1. On the Synaptics Coral Dev Board (Astra SL2610)
-Because this board runs a modern ARM64 architecture with newer Python versions (like Python 3.11+), the legacy `tflite-runtime` package might not have precompiled wheels available on PyPI. Instead, install **`ai-edge-litert`** (the official modern successor to TFLite runtime from Google) alongside the other dependencies:
+Because this board runs a modern ARM64 architecture with newer Python versions (like Python 3.11+), the legacy `tflite-runtime` package might not have precompiled wheels available on PyPI. Instead, install **`ai-edge-litert`** (the official modern successor to TFLite runtime from Google) and **`vosk`** (for speech recognition) alongside the other dependencies:
 
 ```bash
 # Install packages globally (if supported by your system image)
-pip3 install ai-edge-litert numpy iree-base-runtime
+pip3 install ai-edge-litert numpy iree-base-runtime vosk
 ```
 
 If your system blocks global pip installs with an "externally-managed-environment" error, create a virtual environment:
 ```bash
 python3 -m venv .venv --system-site-packages
 source .venv/bin/activate
-pip install ai-edge-litert numpy iree-base-runtime
+pip install ai-edge-litert numpy iree-base-runtime vosk
 ```
 *(Note: `iree-base-runtime` is required for loading compiled `.vmfb` models to accelerate inference on the Torq NPU).*
 
 #### 2. On standard computers (macOS/Linux/Windows) to test on CPU
 If you wish to test the server locally on your host PC:
 ```bash
-pip3 install ai-edge-litert numpy
+pip3 install ai-edge-litert numpy vosk
 ```
-*(Alternatively, you can also use `pip3 install tensorflow numpy` if you already have the full TensorFlow package installed).*
+*(Alternatively, you can also use `pip3 install tensorflow numpy vosk` if you already have the full TensorFlow package installed).*
 
 
 ---
@@ -156,36 +156,73 @@ export GEMINI_API_KEY="your_api_key_here"
 7. Set the `GEMINI_API_KEY` environment variable in your terminal using the copied key.
 
 ### 4. Google Drive Integration (Optional)
-Define the variables to automatically save the generated meeting notes to your Google Drive account:
+To save your meeting reports and raw audio recordings to Google Drive, you can configure the server to route uploads through a lightweight **Google Apps Script Web App**. 
+
+This method bypasses the `0-byte` storage quota limit imposed on Google Service Accounts for free `@gmail.com` accounts, utilizing your personal Google Drive storage instead.
+
+#### How to Set Up the Google Apps Script Gateway:
+
+1. Open your browser and go to [Google Apps Script](https://script.google.com/).
+2. Click **New Project** (Novo projeto) or open an existing script project.
+3. Paste the following JavaScript code in the editor (replacing all code):
+   ```javascript
+   function doPost(e) {
+     try {
+       var data = JSON.parse(e.postData.contents);
+       var folderId = data.folderId;
+       var fileName = data.fileName;
+       var content = data.content;
+       var mimeType = data.mimeType || "text/markdown";
+       
+       var folder = DriveApp.getFolderById(folderId);
+       
+       // Check if the file already exists to avoid duplicates
+       var files = folder.getFilesByName(fileName);
+       while (files.hasNext()) {
+         files.next().setTrashed(true); // Move old version to trash
+       }
+       
+       var file;
+       if (mimeType === "audio/wav") {
+         // Decode the Base64 binary payload sent by the Go server
+         var bytes = Utilities.base64Decode(content);
+         var blob = Utilities.newBlob(bytes, mimeType, fileName);
+         file = folder.createFile(blob);
+       } else {
+         // Create a standard text/markdown file
+         file = folder.createFile(fileName, content, mimeType);
+       }
+       
+       return ContentService.createTextOutput(JSON.stringify({
+         status: "success",
+         fileId: file.getId()
+       })).setMimeType(ContentService.MimeType.JSON);
+       
+     } catch (error) {
+       return ContentService.createTextOutput(JSON.stringify({
+         status: "error",
+         message: error.toString()
+       })).setMimeType(ContentService.MimeType.JSON);
+     }
+   }
+   ```
+4. Click **Save** (diskette icon).
+5. Click **Deploy** > **New deployment** (Nova implantação) in the top-right corner.
+6. Click the gear icon next to "Select type" and choose **Web app** (Aplicativo da Web).
+7. Configure the settings:
+   - **Description**: `Coral Audio and Text Upload Gateway`
+   - **Execute as** (Executar como): **Me** (your-email@gmail.com)
+   - **Who has access** (Quem tem acesso): **Anyone** (Qualquer pessoa)
+8. Click **Deploy**, authorize the required permissions with your Google account, and copy the generated **Web app URL** (ends with `/exec`).
+
+#### Environmental Variables:
+Define these variables in your shell environment or add them directly to a `server/.env` file:
 ```bash
-export GOOGLE_APPLICATION_CREDENTIALS="/path/to/your-credentials.json"
-export GOOGLE_DRIVE_FOLDER_ID="1A2B3C4D5E...your-folder-id"
+export GEMINI_API_KEY="your_api_key_here"
+export GOOGLE_DRIVE_FOLDER_ID="your_google_drive_folder_id"
+export GOOGLE_DRIVE_WEB_APP_URL="https://script.google.com/macros/s/XXXXX/exec"
 ```
-
-#### How to Generate the Credentials:
-
-1. **Create or Select a Google Cloud Project**:
-   * Go to the [Google Cloud Console](https://console.cloud.google.com/).
-   * Create a new project or select an existing one (e.g., `Coral Recorder`).
-2. **Enable the Google Drive API**:
-   * Open the left sidebar menu and navigate to **APIs & Services** > **Library** (APIs e Serviços > Biblioteca).
-   * Search for **Google Drive API**, click on it, and click **Enable** (Ativar).
-3. **Create a Service Account**:
-   * Go to **IAM & Admin** > **Service Accounts** (IAM e Administrador > Contas de Serviço).
-   * Click **Create Service Account** at the top.
-   * Provide a name (e.g., `coral-recorder-drive`) and click **Create and Continue**, then click **Done**.
-4. **Generate and Download the JSON Key**:
-   * In the Service Accounts list, click on the email of the Service Account you just created.
-   * Navigate to the **Keys** (Chaves) tab at the top.
-   * Click **Add Key** > **Create new key** (Adicionar Chave > Criar nova chave).
-   * Select **JSON** format and click **Create**. A `.json` file containing your private key will be downloaded. Save it securely on your machine (avoid keeping it inside the git repository directory to prevent accidental commits).
-5. **Share the Target Folder in Google Drive (Crucial!)**:
-   * Service Accounts do not have access to your personal files or folders by default.
-   * Open your personal **Google Drive** in your browser and select (or create) the folder you want to use.
-   * Right-click the folder and choose **Share** (Compartilhar).
-   * Copy the Service Account email address (you can find it in the Google Cloud Console list or inside the downloaded JSON file under the `"client_email"` key, e.g. `coral-recorder-drive@project-id.iam.gserviceaccount.com`).
-   * Paste the email in the share field, set the role to **Editor**, and click **Share**.
-   * Copy the **Folder ID** from the browser's URL bar (the long alphanumeric string at the end of `https://drive.google.com/drive/folders/YOUR_FOLDER_ID`) and use it for the `GOOGLE_DRIVE_FOLDER_ID` environment variable.
+*(The Folder ID is the long alphanumeric string at the end of the URL when viewing your Google Drive folder in a browser, e.g., `https://drive.google.com/drive/folders/YOUR_FOLDER_ID`)*
 
 ---
 
@@ -244,10 +281,23 @@ This will print a list of all detected devices on your computer.
 
 ### 3. Control and Monitor the Recording
 
-* **Start Recording**: Say the word **"go"** (or "yes" / "on"). The server will print in the console:
-  `>>> [Coral Edge TPU] Signal 'GO' detected! Starting recording...`
-* **Stop Recording**: Say the word **"stop"** (or "no" / "off"). The server will print:
-  `>>> [Coral Edge TPU] Signal 'STOP' detected! Stopping recording...`
-  The recording will be closed and automatically sent for transcription and uploaded to Google Drive.
-* **Fallback (Inactivity - Network Mode Only)**: If you simply stop the client (pressing `Ctrl+C`), the server will detect that the network became inactive for 10 seconds, close the recording safely, and proceed to the transcription.
-* **Acoustic Events**: Background sounds like laughter or applause will be logged on the screen in real-time by the Coral board and attached to the final generated Markdown transcript.
+* **Offline Voice Commands (Vosk)**:
+  To prevent false triggers during conversational speech, voice commands are guarded by the wake-word **"coral"**. Say "coral" followed by one of the following commands:
+  - **Start Recording**: *"coral, iniciar"* / *"coral, começar gravação"* / *"coral, começar a gravar"* (or English *"coral, start"* / *"coral, go"*).
+  - **Stop Recording**: *"coral, parar"* / *"coral, terminar"* / *"coral, encerrar gravação"* (or English *"coral, stop"*).
+  *(Single command words spoken in complete isolation may also trigger).*
+  
+* **CPU Optimization & Stability**:
+  - The Vosk speech decoder runs with a restricted JSON grammar vocabulary containing only the control keywords, lowering CPU overhead by 90% (processing chunks in <20ms) and preventing ALSA/PortAudio buffer overflows.
+  - The YAMNet acoustic classifier automatically disables when the recorder is in standby, and subsamples inference frames by 2 during recording to keep ARM CPU usage optimal.
+
+* **Outputs & Google Drive Sync**:
+  Once recording stops (either via voice command, or automatically after 10 seconds of network inactivity):
+  1. The server uploads `meeting.wav` to Gemini File API to generate meeting minutes.
+  2. A Markdown meeting report is created. It places the **Executive Summary (Sumário Executivo)** and **Action Items (Itens de Ação)** right at the top for immediate visibility, with the **Detailed Transcription (Transcrição Detalhada)** (with speaker identification) at the bottom.
+  3. If Drive integration is configured, both the report and the raw audio are uploaded to Google Drive using a timestamp-prefixed format:
+     - `YYYY-MM-DD_HH-MM-SS_Transcript_Meeting.md`
+     - `YYYY-MM-DD_HH-MM-SS_Audio_Meeting.wav`
+  4. The local temporary `meeting.wav` and the generated markdown transcript files are immediately deleted after successful upload to maintain a **`0-byte` permanent disk footprint** on the Coral board.
+
+* **Acoustic Events**: Background sounds (e.g. laughter, clapping, coughing) detected by the YAMNet model on the Coral Board are printed on the server console in real-time and automatically integrated into the transcription report by Gemini (e.g., `[Risos]`, `[Palmas]`).

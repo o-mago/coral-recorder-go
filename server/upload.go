@@ -134,6 +134,13 @@ func uploadAndTranscribe(ctx context.Context, filePath string, localEvents []str
 	if errUpload != nil {
 		fmt.Printf("\nWarning: Failed to upload to Google Drive: %v\n", errUpload)
 		fmt.Printf("The transcript was generated successfully and is saved locally at: %s\n\n", localMdFile)
+	} else {
+		// Successful upload, so delete the local markdown file to save space on the board
+		if errDel := os.Remove(localMdFile); errDel != nil {
+			fmt.Printf("Warning: failed to delete local transcript file %s: %v\n", localMdFile, errDel)
+		} else {
+			fmt.Printf("Deleted local transcript file %s after successful Google Drive upload.\n", localMdFile)
+		}
 	}
 
 	// Upload the temporary audio file to Google Drive as well
