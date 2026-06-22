@@ -9,10 +9,42 @@ import (
 	"net"
 	"os"
 	"os/exec"
+	"strings"
 	"time"
 
 	"encoding/json"
 )
+
+// loadEnv parses a local .env file and sets environment variables
+func loadEnv() {
+	file, err := os.Open(".env")
+	if err != nil {
+		// Ignore if .env is missing and fallback to system environment
+		return
+	}
+	defer file.Close()
+
+	scanner := bufio.NewScanner(file)
+	for scanner.Scan() {
+		line := strings.TrimSpace(scanner.Text())
+		if line == "" || strings.HasPrefix(line, "#") {
+			continue
+		}
+		parts := strings.SplitN(line, "=", 2)
+		if len(parts) != 2 {
+			continue
+		}
+		key := strings.TrimSpace(parts[0])
+		val := strings.TrimSpace(parts[1])
+		// Strip wrapping quotes if any
+		if len(val) >= 2 && ((val[0] == '"' && val[len(val)-1] == '"') || (val[0] == '\'' && val[len(val)-1] == '\'')) {
+			val = val[1 : len(val)-1]
+		}
+		if key != "" {
+			os.Setenv(key, val)
+		}
+	}
+}
 
 // CoralMessage defines the format of JSON messages sent by coral_audio.py
 type CoralMessage struct {
@@ -22,6 +54,8 @@ type CoralMessage struct {
 }
 
 func main() {
+	loadEnv()
+
 	networkFlag := flag.Bool("network", false, "Run in network mode, listening for UDP client streams")
 	listFlag := flag.Bool("list", false, "List available audio input devices on the server")
 	deviceFlag := flag.Int("device", -1, "Select input device index on the server (default is default system input)")
