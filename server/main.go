@@ -9,7 +9,9 @@ import (
 	"net"
 	"os"
 	"os/exec"
+	"os/signal"
 	"strings"
+	"syscall"
 	"time"
 
 	"encoding/json"
@@ -55,6 +57,19 @@ type CoralMessage struct {
 
 func main() {
 	loadEnv()
+
+	// Ensure LEDs are turned off on any exit path (normal return or log.Fatalf).
+	defer ledAllOff()
+
+	// Catch SIGINT (Ctrl+C) and SIGTERM (systemd stop) to turn off LEDs before exiting.
+	sigs := make(chan os.Signal, 1)
+	signal.Notify(sigs, syscall.SIGINT, syscall.SIGTERM)
+	go func() {
+		<-sigs
+		log.Println("Shutdown signal received. Turning off LEDs and exiting...")
+		ledAllOff()
+		os.Exit(0)
+	}()
 
 	networkFlag := flag.Bool("network", false, "Run in network mode, listening for UDP client streams")
 	listFlag := flag.Bool("list", false, "List available audio input devices on the server")
