@@ -388,10 +388,10 @@ This will print a list of all detected devices on your computer.
   | 🟢 **Green** | Solid ON | Server running — idle, waiting for **"GO"** voice command |
   | 🔴 **Red** | Solid ON | **Recording** in progress |
   | 🔵 **Blue** | Solid ON | **Uploading / Processing** — Gemini transcription + Google Drive sync |
-  | 🔴 **Red** | Blinks 5× | **Error** during transcription or upload |
+  | 🔴 **Red** | Blinks continuously | **Error** during transcription or upload (requires restart) |
   | All | OFF | Server not running |
 
-  After a session finishes (successful transcription or error recovery), the server automatically resets to 🟢 **Green** and waits for the next **"GO"** command — no restart needed.
+  After a successful session finishes, the server automatically resets to 🟢 **Green** and waits for the next **"GO"** command. If an error occurs during recording or upload, the server halts and blinks the 🔴 **Red** LED continuously until the board or service is restarted.
 
 * **Continuous Session Loop**:
   The server never exits after a recording. Once transcription completes, it immediately restarts the Python audio processor and returns to the idle state, ready for the next meeting. Each new session is logged as `=== [Session N] Ready for new recording... ===`.

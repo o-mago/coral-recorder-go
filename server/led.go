@@ -59,15 +59,14 @@ func ledProcessing() {
 	ledSet(ledBlue, true)
 }
 
-// ledError blinks the red LED 5 times to signal a processing error,
-// then returns to the ready state (green solid).
+// ledError blinks the red LED continuously to signal a processing or upload error.
+// It loops infinitely, keeping the error state active until the server is restarted.
 func ledError() {
 	ledAllOff()
-	for i := 0; i < 5; i++ {
+	for {
 		ledSet(ledRed, true)
-		time.Sleep(200 * time.Millisecond)
+		time.Sleep(500 * time.Millisecond)
 		ledSet(ledRed, false)
-		time.Sleep(200 * time.Millisecond)
+		time.Sleep(500 * time.Millisecond)
 	}
-	ledReady()
 }
