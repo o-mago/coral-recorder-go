@@ -1,61 +1,92 @@
 package main
 
 import (
+	"bytes"
 	"context"
+	"encoding/json"
 	"fmt"
+	"io"
+	"net/http"
 	"os"
-
-	"google.golang.org/api/drive/v3"
-	"google.golang.org/api/option"
+	"time"
 )
 
-// uploadToDrive uploads a local file to Google Drive.
-// If the GOOGLE_DRIVE_FOLDER_ID environment variable is set, the file will be uploaded into that folder.
-// Authentication is done using the Service Account JSON file pointed to by the GOOGLE_APPLICATION_CREDENTIALS variable.
+// DriveUploadRequest defines the payload schema sent to the Google Apps Script Web App
+type DriveUploadRequest struct {
+	FolderID string `json:"folderId"`
+	FileName string `json:"fileName"`
+	Content  string `json:"content"`
+}
+
+// uploadToDrive uploads a local file to Google Drive via the Google Apps Script Web App Gateway.
+// Authentication is handled transparently by the Web App executing as the user.
 func uploadToDrive(ctx context.Context, localFilePath, driveFileName string) error {
-	credsPath := os.Getenv("GOOGLE_APPLICATION_CREDENTIALS")
-	if credsPath == "" {
-		credsPath = os.Getenv("GOOGLE_APPLICATION_CREDENTIAL")
-	}
-	if credsPath == "" {
-		return fmt.Errorf("the GOOGLE_APPLICATION_CREDENTIALS environment variable is not defined. " +
-			"To upload to Google Drive, set this variable to the path of your JSON credentials file")
+	webAppURL := os.Getenv("GOOGLE_DRIVE_WEB_APP_URL")
+	if webAppURL == "" {
+		return fmt.Errorf("the GOOGLE_DRIVE_WEB_APP_URL environment variable is not defined in .env")
 	}
 
-	// Initialize the Google Drive service using the provided credentials
-	srv, err := drive.NewService(ctx, option.WithCredentialsFile(credsPath))
+	// Read the local file content
+	contentBytes, err := os.ReadFile(localFilePath)
 	if err != nil {
-		return fmt.Errorf("failed to initialize Google Drive service: %w", err)
+		return fmt.Errorf("failed to read local file %s: %w", localFilePath, err)
 	}
 
-	// Open the local file
-	file, err := os.Open(localFilePath)
-	if err != nil {
-		return fmt.Errorf("failed to open local file %s for upload: %w", localFilePath, err)
-	}
-	defer file.Close()
-
-	// Define the file metadata
-	driveFile := &drive.File{
-		Name:     driveFileName,
-		MimeType: "text/markdown",
-	}
-
-	// If a destination folder ID was provided, associate the file with it
 	folderID := os.Getenv("GOOGLE_DRIVE_FOLDER_ID")
-	if folderID != "" {
-		driveFile.Parents = []string{folderID}
-		fmt.Printf("Uploading file to the Drive folder with ID: %s\n", folderID)
-	} else {
-		fmt.Println("No GOOGLE_DRIVE_FOLDER_ID defined. The file will be created in the Drive root.")
+	reqBody := DriveUploadRequest{
+		FolderID: folderID,
+		FileName: driveFileName,
+		Content:  string(contentBytes),
 	}
 
-	fmt.Printf("Uploading file '%s' to Google Drive...\n", driveFileName)
-	_, err = srv.Files.Create(driveFile).Media(file).Do()
+	jsonBytes, err := json.Marshal(reqBody)
 	if err != nil {
-		return fmt.Errorf("failed to create file on Google Drive: %w", err)
+		return fmt.Errorf("failed to marshal upload request: %w", err)
 	}
 
-	fmt.Println("Upload to Google Drive completed successfully!")
-	return nil
+	fmt.Printf("Uploading file '%s' to Google Drive via Apps Script...\n", driveFileName)
+
+	// Create HTTP request with context
+	req, err := http.NewRequestWithContext(ctx, "POST", webAppURL, bytes.NewBuffer(jsonBytes))
+	if err != nil {
+		return fmt.Errorf("failed to create HTTP request: %w", err)
+	}
+	req.Header.Set("Content-Type", "application/json")
+
+	// Standard Go client automatically follows 302 redirects returned by Apps Script Web Apps
+	client := &http.Client{
+		Timeout: 30 * time.Second,
+	}
+
+	resp, err := client.Do(req)
+	if err != nil {
+		return fmt.Errorf("HTTP request failed: %w", err)
+	}
+	defer resp.Body.Close()
+
+	respBody, _ := io.ReadAll(resp.Body)
+	if resp.StatusCode != http.StatusOK {
+		return fmt.Errorf("failed to upload via Apps Script (status %d): %s", resp.StatusCode, string(respBody))
+	}
+
+	// Check response content if it indicates success
+	var result map[string]interface{}
+	if err := json.Unmarshal(respBody, &result); err == nil {
+		if status, ok := result["status"].(string); ok {
+			if status == "success" {
+				fmt.Printf("Upload to Google Drive completed successfully! File ID: %v\n", result["fileId"])
+				return nil
+			} else if msg, ok := result["message"].(string); ok {
+				return fmt.Errorf("Apps Script execution error: %s", msg)
+			}
+		}
+	}
+
+	// Fallback check if response contains success text directly
+	if bytes.Contains(respBody, []byte("success")) {
+		fmt.Println("Upload to Google Drive completed successfully!")
+		return nil
+	}
+
+	return fmt.Errorf("unexpected response from Apps Script: %s", string(respBody))
 }
