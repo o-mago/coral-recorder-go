@@ -10,6 +10,7 @@ import (
 	"os"
 	"os/exec"
 	"os/signal"
+	"path/filepath"
 	"strings"
 	"syscall"
 	"time"
@@ -58,21 +59,6 @@ type CoralMessage struct {
 func main() {
 	loadEnv()
 
-	// Run Google Drive upload test
-	fmt.Println("RUNNING GOOGLE DRIVE UPLOAD TEST...")
-	dummyFile := "dummy_test.txt"
-	err := os.WriteFile(dummyFile, []byte("Hello from Coral board via USB ADB Proxy!"), 0644)
-	if err != nil {
-		log.Fatalf("Failed to write dummy file: %v", err)
-	}
-	err = uploadToDrive(context.Background(), dummyFile, "test_coral_usb_proxy.txt", "text/plain")
-	os.Remove(dummyFile)
-	if err != nil {
-		log.Fatalf("GOOGLE DRIVE UPLOAD TEST FAILED: %v", err)
-	}
-	fmt.Println("GOOGLE DRIVE UPLOAD TEST SUCCEEDED!")
-	os.Exit(0)
-
 	// Ensure LEDs are turned off on any exit path (normal return or log.Fatalf).
 	defer ledAllOff()
 
@@ -89,7 +75,18 @@ func main() {
 	networkFlag := flag.Bool("network", false, "Run in network mode, listening for UDP client streams")
 	listFlag := flag.Bool("list", false, "List available audio input devices on the server")
 	deviceFlag := flag.Int("device", -1, "Select input device index on the server (default is default system input)")
+	statusFlag := flag.Bool("status", false, "Show server service status, queue info, and recent error logs")
 	flag.Parse()
+
+	if *statusFlag {
+		showStatusAndLogs()
+		os.Exit(0)
+	}
+
+	// Start background upload queue retry worker
+	ctx, cancel := context.WithCancel(context.Background())
+	defer cancel()
+	go startRetryLoop(ctx)
 
 	localMode := !*networkFlag
 
@@ -147,6 +144,11 @@ func main() {
 	log.Printf("Starting local Python audio processor using: %s\n", pythonExe)
 
 	// Signal that the server is up and waiting for the first recording.
+	if localMode {
+		SetAudioSource(SourceLocalMic)
+	} else {
+		SetAudioSource(SourceExternalNet)
+	}
 	ledReady()
 
 	udpChan := make(chan []byte, 100)
@@ -174,6 +176,11 @@ func main() {
 	for sessionNum := 1; ; sessionNum++ {
 		if sessionNum > 1 {
 			log.Printf("\n=== [Session %d] Ready for new recording. Waiting for 'GO' voice command... ===\n", sessionNum)
+			if localMode {
+				SetAudioSource(SourceLocalMic)
+			} else {
+				SetAudioSource(SourceExternalNet)
+			}
 			ledReady()
 		}
 
@@ -302,6 +309,7 @@ func main() {
 					log.Println(">>> Client connection detected (usb or network). Switching from Standalone (mic) to Client-Server (network) mode...")
 					stopLocalMic()
 					activeSource = "net"
+					SetAudioSource(SourceExternalNet)
 				}
 				if activeSource == "net" {
 					if !networkStarted {
@@ -361,15 +369,137 @@ func main() {
 			if !recordingDone && activeSource == "net" {
 				log.Println("Warning: Recording interrupted by network timeout before 'STOP' voice command.")
 			}
-			log.Println("Starting upload and transcription of the meeting...")
-			ledProcessing()
-			ctx := context.Background()
-			if err := uploadAndTranscribe(ctx, "meeting.wav", events); err != nil {
-				log.Printf("Error during transcription processing: %v", err)
-				ledError() // blinks red 5x, then returns to green (ready)
+
+			timestamp := time.Now().Format("2006-01-02_15-04-05")
+			queueDir := getQueueDir()
+			pendingWav := filepath.Join(queueDir, fmt.Sprintf("pending_%s.wav", timestamp))
+			pendingJson := filepath.Join(queueDir, fmt.Sprintf("pending_%s.json", timestamp))
+
+			log.Printf("Saving session to queue files: %s and %s...\n", pendingWav, pendingJson)
+
+			// Rename meeting.wav to pending_<timestamp>.wav
+			meetingPath := filepath.Join(queueDir, "meeting.wav")
+			if err := os.Rename(meetingPath, pendingWav); err != nil {
+				log.Printf("Failed to rename meeting.wav to %s: %v", pendingWav, err)
+				// If rename fails, try direct local rename as fallback
+				if err2 := os.Rename("meeting.wav", pendingWav); err2 != nil {
+					pendingWav = "meeting.wav"
+				}
 			}
+
+			// Save metadata events to pending_<timestamp>.json
+			metadata := PendingSession{
+				Timestamp: timestamp,
+				Events:    events,
+			}
+			metadataBytes, err := json.Marshal(metadata)
+			if err != nil {
+				log.Printf("Failed to marshal pending metadata: %v", err)
+			} else {
+				if err := os.WriteFile(pendingJson, metadataBytes, 0644); err != nil {
+					log.Printf("Failed to write pending json file %s: %v", pendingJson, err)
+				}
+			}
+
+			// Manually refresh LED state
+			TriggerLEDUpdate()
+
+			// Trigger background retry loop to process this new file immediately
+			triggerUploadRetry()
 		} else {
 			log.Println("No audio was recorded. Skipping transcription.")
 		}
 	}
+}
+
+// showStatusAndLogs fetches and formats service logs, systemd status, and the local pending queue.
+func showStatusAndLogs() {
+	fmt.Println("==================================================")
+	fmt.Println("         CORAL RECORDER SERVICE STATUS            ")
+	fmt.Println("==================================================")
+
+	// 1. Check systemd service status
+	cmd := exec.Command("systemctl", "status", "coral-recorder")
+	output, err := cmd.CombinedOutput()
+	if err != nil {
+		fmt.Printf("Systemd service status check error/inactive: %v\n", err)
+	}
+	fmt.Println(string(output))
+
+	// 2. Check pending queue files
+	fmt.Println("==================================================")
+	fmt.Println("            PENDING RECORDINGS QUEUE              ")
+	fmt.Println("==================================================")
+	queueDir := getQueueDir()
+	files, err := os.ReadDir(queueDir)
+	if err != nil {
+		fmt.Printf("Failed to read directory %s: %v\n", queueDir, err)
+	} else {
+		var pendingWavs []os.DirEntry
+		for _, f := range files {
+			if !f.IsDir() && strings.HasPrefix(f.Name(), "pending_") && strings.HasSuffix(f.Name(), ".wav") {
+				pendingWavs = append(pendingWavs, f)
+			}
+		}
+
+		if len(pendingWavs) == 0 {
+			fmt.Println("Queue is empty. No pending uploads.")
+		} else {
+			fmt.Printf("Found %d pending recording(s) in queue:\n\n", len(pendingWavs))
+			for _, f := range pendingWavs {
+				info, err := f.Info()
+				if err != nil {
+					fmt.Printf("- %s (details unavailable)\n", f.Name())
+					continue
+				}
+				sizeMB := float64(info.Size()) / (1024 * 1024)
+				
+				// Read matching JSON metadata if present
+				jsonPath := filepath.Join(queueDir, strings.TrimSuffix(f.Name(), ".wav")+".json")
+				eventCount := 0
+				if jsonBytes, err := os.ReadFile(jsonPath); err == nil {
+					var metadata PendingSession
+					if err := json.Unmarshal(jsonBytes, &metadata); err == nil {
+						eventCount = len(metadata.Events)
+					}
+				}
+				
+				// Read matching local transcript markdown if present
+				mdPath := filepath.Join(queueDir, fmt.Sprintf("transcricao_%s.md", getTimestampFromPath(f.Name())))
+				hasMd := "No"
+				if _, err := os.Stat(mdPath); err == nil {
+					hasMd = "Yes"
+				}
+
+				fmt.Printf("- File: %s\n  Size: %.2f MB\n  Local Events: %d\n  Transcript Cached: %s\n\n", 
+					f.Name(), sizeMB, eventCount, hasMd)
+			}
+		}
+	}
+
+	// 3. Show recent journal logs
+	fmt.Println("==================================================")
+	fmt.Println("              RECENT SERVICE LOGS                 ")
+	fmt.Println("==================================================")
+	cmdLogs := exec.Command("journalctl", "-u", "coral-recorder", "-n", "30", "--no-pager")
+	logsOutput, err := cmdLogs.CombinedOutput()
+	if err != nil {
+		fmt.Printf("Failed to fetch journal logs: %v\n", err)
+		if len(logsOutput) > 0 {
+			fmt.Println(string(logsOutput))
+		}
+		fmt.Println("\n* Hint: To apply the 'systemd-journal' group in your current SSH/terminal session, run: newgrp systemd-journal")
+	} else {
+		fmt.Println(string(logsOutput))
+	}
+	fmt.Println("==================================================")
+}
+
+// getQueueDir resolves the directory where the binary is running, where pending queue files reside.
+func getQueueDir() string {
+	exePath, err := os.Executable()
+	if err == nil {
+		return filepath.Dir(exePath)
+	}
+	return "."
 }

@@ -29,11 +29,18 @@ func main() {
 		log.Println("ADB reverse port forwarding configured successfully!")
 	}
 
+	internetOnlyFlag := flag.Bool("internet-only", false, "Provide internet connection via USB ADB proxy only (no audio capturing or streaming)")
 	listFlag := flag.Bool("list", false, "List available audio input devices")
 	deviceFlag := flag.Int("device", -1, "Select input device index (default is default system input)")
 	serverFlag := flag.String("server", "localhost:5000", "UDP server address (ip:port)")
 	usbFlag := flag.Bool("usb", true, "Connect to Coral server via USB-C cable (default: true)")
 	flag.Parse()
+
+	if *internetOnlyFlag {
+		log.Println("Internet-only mode active. Running proxy and ADB reverse tunnel only (audio streaming disabled).")
+		log.Println("Press Ctrl+C to stop.")
+		select {} // Keep the application alive to run the proxy background goroutine
+	}
 
 	err := portaudio.Initialize()
 	if err != nil {

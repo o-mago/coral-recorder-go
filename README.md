@@ -372,6 +372,13 @@ This will print a list of all detected devices on your computer.
   ```
   *(Replace `2` with the BlackHole or Aggregate Device index from your `-list` command, and replace the server IP with your Coral Board's IP).*
 
+- **Internet-Only Mode (Proxy only, local mic on board)**:
+  If you want the board to use its own local microphone for recording, but still need the Mac to provide it with internet access (through the USB ADB proxy) to upload the results, run the client with the `-internet-only` flag:
+  ```bash
+  go run . -internet-only
+  ```
+  This will spin up the proxy server and configure ADB reverse port forwarding, then run indefinitely in the background without opening the Mac's audio device or sending any UDP streams.
+
 ### 3. Control and Monitor the Recording
 
 * **Offline Voice Commands (Vosk)**:
@@ -383,15 +390,25 @@ This will print a list of all detected devices on your computer.
 * **LED Visual Feedback**:
   The server drives the three onboard status LEDs of the Astra SL2610 via the Linux sysfs interface (`/sys/class/leds/`) to give a clear at-a-glance view of what the board is doing — no terminal required.
 
-  | LED | Pattern | State |
-  |---|---|---|
-  | 🟢 **Green** | Solid ON | Server running — idle, waiting for **"GO"** voice command |
-  | 🔴 **Red** | Solid ON | **Recording** in progress |
-  | 🔵 **Blue** | Solid ON | **Uploading / Processing** — Gemini transcription + Google Drive sync |
-  | 🔴 **Red** | Blinks continuously | **Error** during transcription or upload (requires restart) |
-  | All | OFF | Server not running |
+  | LED | Pattern | State | Description |
+  |---|---|---|---|
+  | 🟢 **Green** | Solid ON | **Idle (Local)** | Standalone mode — monitoring local microphone, waiting for **"GO"** command (no errors) |
+  | 🟢+🔵 **Green+Blue** | Solid ON | **Idle (Network)** | Client-Server mode — waiting for client UDP stream, waiting for **"GO"** command (no errors) |
+  | 🟢 + 🔴 **Green + Blinking Red** | Solid Green, Blinking Red | **Idle (Local with Queue Errors)** | Standalone mode ready to record, but failed recordings are waiting in the queue |
+  | 🟢+🔵 + 🔴 **Cyan + Blinking Red** | Solid Cyan, Blinking Red | **Idle (Network with Queue Errors)** | Client-Server mode ready to connect, but failed recordings are waiting in the queue |
+  | 🔴 **Red** | Solid ON | **Recording** | Recording in progress (takes absolute priority) |
+  | 🔵 + 🔴 **Blue + Blinking Red** | Solid Blue, Blinking Red | **Retrying Queue** | Actively re-processing and uploading failed recordings in the background |
+  | 🔵 **Blue** | Solid ON | **Processing** | Actively uploading and transcribing a fresh session |
+  | All | OFF | **Offline** | Server not running |
 
-  After a successful session finishes, the server automatically resets to 🟢 **Green** and waits for the next **"GO"** command. If an error occurs during recording or upload, the server halts and blinks the 🔴 **Red** LED continuously until the board or service is restarted.
+  After a successful session finishes, the server automatically resets to its idle color (🟢 **Green** or 🟢+🔵 **Cyan**) and waits for the next **"GO"** command. If there are pending/failed uploads in the queue, the red LED will blink alongside the solid idle colors to indicate that it is ready for a new recording but still has unsent data. During background queue retries, the blue LED stays solid while the red LED blinks.
+
+* **Diagnostics and Logs Flag (`-status`)**:
+  To inspect the service status, local upload queue, and logs directly from the command line, run:
+  ```bash
+  /home/mago/dev/coral-recorder-go/server/coral-recorder -status
+  ```
+  *(To run as a non-root user and view journal logs, make sure you are in the `systemd-journal` group or run `newgrp systemd-journal` in your session).*
 
 * **Continuous Session Loop**:
   The server never exits after a recording. Once transcription completes, it immediately restarts the Python audio processor and returns to the idle state, ready for the next meeting. Each new session is logged as `=== [Session N] Ready for new recording... ===`.
@@ -400,14 +417,15 @@ This will print a list of all detected devices on your computer.
   - The Vosk speech decoder runs with a restricted JSON grammar vocabulary containing only the control keywords, lowering CPU overhead by 90% (processing chunks in <20ms) and preventing ALSA/PortAudio buffer overflows.
   - The YAMNet acoustic classifier automatically disables when the recorder is in standby, and subsamples inference frames by 2 during recording to keep ARM CPU usage optimal.
 
-* **Outputs & Google Drive Sync**:
+* **Outputs, Safety Queue & Google Drive Sync**:
   Once recording stops (either via voice command, or automatically after 10 seconds of network inactivity):
-  1. The server uploads `meeting.wav` to Gemini File API to generate meeting minutes.
-  2. A Markdown meeting report is created. It places the **Executive Summary (Sumário Executivo)** and **Action Items (Itens de Ação)** right at the top for immediate visibility, with the **Detailed Transcription (Transcrição Detalhada)** (with speaker identification) at the bottom.
-  3. If Drive integration is configured, both the report and the raw audio are uploaded to Google Drive using a timestamp-prefixed format:
+  1. The server immediately renames `meeting.wav` to `pending_<timestamp>.wav` and marshals Edge-TPU events to `pending_<timestamp>.json` inside the queue directory. This ensures the files survive reboots/power cycles and are not overwritten by the next recording.
+  2. The main loop immediately starts a new recording session, allowing you to record a new meeting while the previous one is uploaded asynchronously in the background.
+  3. The background retry worker uploads `pending_<timestamp>.wav` to the Gemini File API to generate the meeting minutes report `transcricao_<timestamp>.md`. (If this markdown file already exists from a previous successful Gemini run, the system reuses it to save API usage).
+  4. Both the report and the raw audio are uploaded to Google Drive using a timestamp-prefixed format:
      - `YYYY-MM-DD_HH-MM-SS_Transcript_Meeting.md`
      - `YYYY-MM-DD_HH-MM-SS_Audio_Meeting.wav`
-  4. The local temporary `meeting.wav` and the generated markdown transcript files are immediately deleted after successful upload to maintain a **`0-byte` permanent disk footprint** on the Coral board.
+     - The local files are **only** deleted after successful upload of *both* files, ensuring 100% data safety.
 
 * **Acoustic Events**: Background sounds (e.g. laughter, clapping, coughing) detected by the YAMNet model on the Coral Board are printed on the server console in real-time and automatically integrated into the transcription report by Gemini (e.g., `[Risos]`, `[Palmas]`).
 
