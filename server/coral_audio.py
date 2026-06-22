@@ -232,6 +232,8 @@ def main():
             speech_detected = False
             start_command = False
             stop_command = False
+            start_trigger_word = ""
+            stop_trigger_word = ""
 
             # --- VOSK OFFLINE PORTUGUESE COMMAND DETECTION ---
             if vosk_recognizer:
@@ -244,18 +246,29 @@ def main():
                         res = json.loads(vosk_recognizer.PartialResult())
                         text = res.get("partial", "").lower()
 
-                    # Detect Portuguese and English keywords via restricted grammar
-                    start_keywords = ["iniciar", "começar", "comecar", "gravar", "start"]
-                    stop_keywords = ["parar", "terminar", "encerrar", "stop"]
-
-                    for kw in start_keywords:
-                        if kw in text:
+                    # 1. Full phrase matching for Portuguese to prevent false triggers during conversational talk
+                    # 2. Isolated word matching for short keywords like "start"/"stop"/"go"/"parar"/"terminar"
+                    text_clean = text.strip()
+                    
+                    # Check start phrases
+                    for phrase in ["iniciar gravação", "iniciar gravacao", "começar gravação", "comecar gravacao", "começar a gravar", "comecar a gravar"]:
+                        if phrase in text:
                             start_command = True
+                            start_trigger_word = phrase
                             break
-                    for kw in stop_keywords:
-                        if kw in text:
+                    if not start_command and text_clean in ["start", "go", "iniciar", "começar", "comecar"]:
+                        start_command = True
+                        start_trigger_word = text_clean
+
+                    # Check stop phrases
+                    for phrase in ["parar gravação", "parar gravacao", "terminar gravação", "terminar gravacao", "encerrar gravação", "encerrar gravacao"]:
+                        if phrase in text:
                             stop_command = True
+                            stop_trigger_word = phrase
                             break
+                    if not stop_command and text_clean in ["stop", "parar", "terminar", "encerrar"]:
+                        stop_command = True
+                        stop_trigger_word = text_clean
                 except Exception as e:
                     sys.stderr.write(f"Vosk inference error: {e}\n")
 
@@ -365,7 +378,10 @@ def main():
                     vosk_recognizer.Reset()
                 # Notify Go
                 print(json.dumps({"type": "control", "value": "start"}), flush=True)
-                sys.stderr.write("Recorder started via voice command!\n")
+                if start_trigger_word:
+                    sys.stderr.write(f"Recorder started via voice command: detected '{start_trigger_word}' in transcript '{text}'\n")
+                else:
+                    sys.stderr.write("Recorder started via voice command!\n")
 
             # If recording is active, handle VAD buffering and WAV write
             if recording:
@@ -391,7 +407,10 @@ def main():
                         vosk_recognizer.Reset()
                     # Notify Go that recording is complete
                     print(json.dumps({"type": "control", "value": "done"}), flush=True)
-                    sys.stderr.write("Recorder stopped via voice command!\n")
+                    if stop_trigger_word:
+                        sys.stderr.write(f"Recorder stopped via voice command: detected '{stop_trigger_word}' in transcript '{text}'\n")
+                    else:
+                        sys.stderr.write("Recorder stopped via voice command!\n")
                     break
 
     except KeyboardInterrupt:
