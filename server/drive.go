@@ -15,6 +15,9 @@ import (
 func uploadToDrive(ctx context.Context, localFilePath, driveFileName string) error {
 	credsPath := os.Getenv("GOOGLE_APPLICATION_CREDENTIALS")
 	if credsPath == "" {
+		credsPath = os.Getenv("GOOGLE_APPLICATION_CREDENTIAL")
+	}
+	if credsPath == "" {
 		return fmt.Errorf("the GOOGLE_APPLICATION_CREDENTIALS environment variable is not defined. " +
 			"To upload to Google Drive, set this variable to the path of your JSON credentials file")
 	}
