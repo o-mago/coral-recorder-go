@@ -58,6 +58,21 @@ type CoralMessage struct {
 func main() {
 	loadEnv()
 
+	// Run Google Drive upload test
+	fmt.Println("RUNNING GOOGLE DRIVE UPLOAD TEST...")
+	dummyFile := "dummy_test.txt"
+	err := os.WriteFile(dummyFile, []byte("Hello from Coral board via USB ADB Proxy!"), 0644)
+	if err != nil {
+		log.Fatalf("Failed to write dummy file: %v", err)
+	}
+	err = uploadToDrive(context.Background(), dummyFile, "test_coral_usb_proxy.txt", "text/plain")
+	os.Remove(dummyFile)
+	if err != nil {
+		log.Fatalf("GOOGLE DRIVE UPLOAD TEST FAILED: %v", err)
+	}
+	fmt.Println("GOOGLE DRIVE UPLOAD TEST SUCCEEDED!")
+	os.Exit(0)
+
 	// Ensure LEDs are turned off on any exit path (normal return or log.Fatalf).
 	defer ledAllOff()
 
