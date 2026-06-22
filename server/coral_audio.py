@@ -119,6 +119,12 @@ def load_tflite_interpreter(model_path):
             try:
                 # Default path for libedgetpu on Linux/Coral Dev Boards
                 if hasattr(tflite, "load_delegate"):
+                    # Check first via ctypes if libedgetpu can be loaded to avoid ai-edge-litert bug
+                    import ctypes
+                    try:
+                        ctypes.CDLL("libedgetpu.so.1")
+                    except Exception as ctypes_err:
+                        raise RuntimeError(f"libedgetpu.so.1 is not loadable: {ctypes_err}")
                     delegate = tflite.load_delegate("libedgetpu.so.1")
                     return tflite.Interpreter(model_path, experimental_delegates=[delegate])
                 else:
