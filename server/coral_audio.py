@@ -164,7 +164,7 @@ def main():
             sys.stderr.write("Loading Vosk Portuguese Speech Model...\n")
             vosk_model = Model("model")
             # Restrict vocabulary to command words + [unk] to reduce CPU usage by 90%
-            vosk_grammar = '["iniciar", "gravação", "começar", "gravar", "parar", "terminar", "encerrar", "start", "stop", "[unk]"]'
+            vosk_grammar = '["coral", "iniciar", "inicie", "começar", "comece", "gravar", "gravação", "parar", "terminar", "encerrar", "start", "stop", "[unk]"]'
             vosk_recognizer = KaldiRecognizer(vosk_model, SAMPLE_RATE, vosk_grammar)
             sys.stderr.write("Vosk Portuguese Speech Model loaded successfully!\n")
         except Exception as e:
@@ -250,15 +250,22 @@ def main():
                     # 2. Isolated word matching for short keywords like "start"/"stop"/"go"/"parar"/"terminar"
                     text_clean = text.strip()
                     
-                    # Check start phrases
-                    for phrase in ["iniciar gravação", "iniciar gravacao", "começar gravação", "comecar gravacao", "começar a gravar", "comecar a gravar"]:
-                        if phrase in text:
-                            start_command = True
-                            start_trigger_word = phrase
-                            break
-                    if not start_command and text_clean in ["start", "go", "iniciar", "começar", "comecar"]:
-                        start_command = True
-                        start_trigger_word = text_clean
+                    # Check start phrases (requires "coral" + a start keyword)
+                    if "coral" in text:
+                        start_keywords = [
+                            "iniciar gravação", "iniciar gravacao",
+                            "começar gravação", "comecar gravacao",
+                            "começar a gravar", "comecar a gravar",
+                            "inicie gravação", "inicie gravacao",
+                            "comece a gravar", "comece gravar",
+                            "iniciar", "começar", "comecar", "inicie", "comece", "gravar",
+                            "start", "go"
+                        ]
+                        for kw in start_keywords:
+                            if kw in text:
+                                start_command = True
+                                start_trigger_word = f"coral + {kw}"
+                                break
 
                     # Check stop phrases
                     for phrase in ["parar gravação", "parar gravacao", "terminar gravação", "terminar gravacao", "encerrar gravação", "encerrar gravacao"]:
