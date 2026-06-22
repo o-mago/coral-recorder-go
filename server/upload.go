@@ -136,5 +136,12 @@ func uploadAndTranscribe(ctx context.Context, filePath string, localEvents []str
 		fmt.Printf("The transcript was generated successfully and is saved locally at: %s\n\n", localMdFile)
 	}
 
+	// Delete the local temporary audio file to free up space on the board
+	if errDel := os.Remove(filePath); errDel != nil {
+		fmt.Printf("Warning: failed to delete local temporary audio file %s: %v\n", filePath, errDel)
+	} else {
+		fmt.Printf("Deleted local temporary audio file %s to free up space.\n", filePath)
+	}
+
 	return nil
 }
