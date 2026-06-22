@@ -49,7 +49,52 @@ pip install ai-edge-litert numpy iree-base-runtime vosk
 ```
 *(Note: `iree-base-runtime` is required for loading compiled `.vmfb` models to accelerate inference on the Torq NPU).*
 
-#### 2. On standard computers (macOS/Linux/Windows) to test on CPU
+#### 2. PortAudio on the Coral Dev Board (for local microphone mode)
+The Yocto-based OS image does not ship PortAudio. If you want the server to run in hybrid or standalone mode using the board's built-in microphone (`klamath-asoc` DMIC), you must build PortAudio from source:
+
+```bash
+# Clone and build PortAudio from source on the board
+cd ~/dev
+git clone https://github.com/PortAudio/portaudio.git
+cd portaudio
+./configure
+make
+make install
+```
+
+This installs the library to `/usr/local/lib` and the pkg-config descriptor to `/usr/local/lib/pkgconfig/portaudio-2.0.pc`. Register both with the system:
+
+```bash
+# Make the dynamic linker aware of /usr/local/lib
+echo '/usr/local/lib' >> /etc/ld.so.conf
+ldconfig
+
+# Make pkg-config find PortAudio (add to ~/.bashrc for persistence)
+export PKG_CONFIG_PATH=/usr/local/lib/pkgconfig:$PKG_CONFIG_PATH
+echo 'export PKG_CONFIG_PATH=/usr/local/lib/pkgconfig:$PKG_CONFIG_PATH' >> ~/.bashrc
+```
+
+Also add your user to the `audio` group so PortAudio can open `/dev/snd/*` devices:
+```bash
+usermod -aG audio $USER
+# Apply immediately in the current shell without logging out:
+newgrp audio
+```
+
+#### 3. ALSA configuration on the Coral Dev Board
+The Astra SL2610 SoC exposes a built-in digital microphone as `card 0` (`klamath-asoc`). By default, `/etc/asound.conf` is empty and ALSA does not know what `default` means, causing PortAudio to fail. Create the mapping:
+
+```bash
+printf 'pcm.!default {\n    type hw\n    card 0\n    device 0\n}\n\nctl.!default {\n    type hw\n    card 0\n}\n' > /etc/asound.conf
+```
+
+Verify the microphone is visible before starting the server:
+```bash
+arecord -l
+# Expected: card 0: klamathasoc [klamath-asoc], device 0: dummy-dmic
+```
+
+#### 4. On standard computers (macOS/Linux/Windows) to test on CPU
 If you wish to test the server locally on your host PC:
 ```bash
 pip3 install ai-edge-litert numpy vosk
@@ -124,21 +169,39 @@ You do not need to edit the client code. By default, the client sends audio to `
   ```bash
   go run . -server 192.168.1.100:5000
   ```
+
 - **Via USB-C Cable (Direct Connection)**:
-  Connect your PC directly to the Coral Board's USB-C data port (labeled OTG). Mendel Linux automatically sets up a virtual network interface (USB Ethernet Gadget), assigning a static IP (typically **`192.168.100.2`** or **`192.168.2.2`**) to the Coral Board.
-  1. Start the server on the Coral Board in network mode:
-     ```bash
-     go run . -network
-     ```
-  2. Start the client on the PC pointing to the virtual USB IP:
-     - Using the convenient `-usb` flag (recommended - auto-detects the host interface subnet subnet and points to either `192.168.2.2` or `192.168.100.2` dynamically):
-       ```bash
-       go run . -usb
-       ```
-     - Or by manually specifying the IP and port with the `-server` flag:
-       ```bash
-       go run . -server 192.168.2.2:5000
-       ```
+  Connect your PC directly to the Coral Board's USB-C data port (labeled OTG).
+
+  The recommended setup on **macOS** is to use **Internet Sharing** as the DHCP gateway for the board. This gives the Coral internet access (required for the Gemini API upload) and a stable IP on the `192.168.2.x` subnet:
+
+  > [!IMPORTANT]
+  > The Coral Dev Board's Yocto image does not include Wi-Fi support. **macOS Internet Sharing is the only way to give the board internet access via USB-C** so that it can upload recordings to the Gemini File API.
+
+  **macOS Internet Sharing setup (one-time):**
+  1. Go to **System Settings > General > Sharing**.
+  2. Click the **ⓘ** next to **Internet Sharing**.
+  3. Set **Share your connection from:** to your active internet interface (e.g. Wi-Fi).
+  4. Set **To computers using:** to the USB Ethernet adapter (the one that appears when the Coral is plugged in — typically listed as an NCM/RNDIS gadget or `en10`).
+  5. Enable **Internet Sharing**. macOS will create a `bridge100` interface at `192.168.2.1` and run a DHCP server on it.
+
+  **On the Coral board (one-time):** configure `usb0` to use DHCP so it gets an IP from macOS automatically on every boot:
+  ```bash
+  # Edit /etc/network/interfaces: replace the static usb0 block with:
+  # auto usb0
+  # iface usb0 inet dhcp
+  #
+  # Then request an IP immediately (no reboot needed):
+  udhcpc -i usb0
+  ```
+  After this the board will be reachable at `192.168.2.2` and will route internet traffic through the Mac.
+
+  **Start the client** on the Mac using the `-usb` flag (auto-detects `192.168.2.2`):
+  ```bash
+  go run . -usb
+  # Or explicitly:
+  go run . -server 192.168.2.2:5000
+  ```
 
 ### 3. Gemini API Key
 Define the `GEMINI_API_KEY` environment variable:
@@ -231,30 +294,35 @@ export GOOGLE_DRIVE_WEB_APP_URL="https://script.google.com/macros/s/XXXXX/exec"
 ### 1. Start the Server on the Coral Board
 
 #### Auto-Switching Hybrid Mode (Default - Local Mic with Client Auto-Detect)
-By default, the server starts in a hybrid mode. It captures audio from the local microphone (using a connected USB/built-in mic) but concurrently listens for client UDP connections on port 5000 (via network or USB-C). As soon as a client connects and starts streaming:
+By default, the server starts in a hybrid mode. It captures audio from the local microphone (using the board's built-in DMIC or a connected USB mic) but concurrently listens for client UDP connections on port 5000. As soon as a client connects and starts streaming:
 - The server automatically stops capturing local microphone audio.
 - It seamlessly transitions to recording the client's incoming PC stream.
 - No server restart is needed!
 
+> [!NOTE]
+> On the Coral Dev Board, PortAudio must be built from source and `PKG_CONFIG_PATH` must be set before running `go run` (see Prerequisites). The `audio` group and `/etc/asound.conf` must also be configured (one-time setup).
+
 1. (Optional) List local audio devices on the Coral Board:
    ```bash
    cd server
-   go run . -list
+   PKG_CONFIG_PATH=/usr/local/lib/pkgconfig go run . -list
    ```
 2. Start the server (runs in hybrid mode, defaulting to system input mic):
    ```bash
-   go run .
+   cd server
+   PKG_CONFIG_PATH=/usr/local/lib/pkgconfig go run .
    ```
-   *(To use a specific microphone, use the `-device <index>` flag, e.g. `go run . -device 1`).*
+   *(To use a specific microphone, use the `-device <index>` flag, e.g. `go run . -device 1`.)*
+   *(After adding `PKG_CONFIG_PATH` to `~/.bashrc`, you can omit the prefix.)*
 
 #### Network-Only Mode
-If you want the server to bypass the local microphone entirely and ONLY wait for remote UDP client streams (e.g., when the Coral Board has no microphone attached and you want to save resources):
+If you want the server to bypass the local microphone entirely and ONLY wait for remote UDP client streams (e.g., to save resources when no microphone is needed on the board side):
 ```bash
 cd server
-# On standard systems (with PortAudio installed):
-go run . -network
+# With PortAudio installed from source (Coral Dev Board):
+PKG_CONFIG_PATH=/usr/local/lib/pkgconfig go run . -network
 
-# On the Yocto-based Coral Dev Board (which lacks PortAudio libraries):
+# Without PortAudio (build tag disables the dependency entirely):
 go run -tags no_portaudio . -network
 ```
 
@@ -286,7 +354,23 @@ This will print a list of all detected devices on your computer.
   - **Start Recording**: *"coral, iniciar"* / *"coral, começar gravação"* / *"coral, começar a gravar"* (or English *"coral, start"* / *"coral, go"*).
   - **Stop Recording**: *"coral, parar"* / *"coral, terminar"* / *"coral, encerrar gravação"* (or English *"coral, stop"*).
   *(Single command words spoken in complete isolation may also trigger).*
-  
+
+* **LED Visual Feedback**:
+  The server drives the three onboard status LEDs of the Astra SL2610 via the Linux sysfs interface (`/sys/class/leds/`) to give a clear at-a-glance view of what the board is doing — no terminal required.
+
+  | LED | Pattern | State |
+  |---|---|---|
+  | 🟢 **Green** | Solid ON | Server running — idle, waiting for **"GO"** voice command |
+  | 🔴 **Red** | Solid ON | **Recording** in progress |
+  | 🔵 **Blue** | Solid ON | **Uploading / Processing** — Gemini transcription + Google Drive sync |
+  | 🔴 **Red** | Blinks 5× | **Error** during transcription or upload |
+  | All | OFF | Server not running |
+
+  After a session finishes (successful transcription or error recovery), the server automatically resets to 🟢 **Green** and waits for the next **"GO"** command — no restart needed.
+
+* **Continuous Session Loop**:
+  The server never exits after a recording. Once transcription completes, it immediately restarts the Python audio processor and returns to the idle state, ready for the next meeting. Each new session is logged as `=== [Session N] Ready for new recording... ===`.
+
 * **CPU Optimization & Stability**:
   - The Vosk speech decoder runs with a restricted JSON grammar vocabulary containing only the control keywords, lowering CPU overhead by 90% (processing chunks in <20ms) and preventing ALSA/PortAudio buffer overflows.
   - The YAMNet acoustic classifier automatically disables when the recorder is in standby, and subsamples inference frames by 2 during recording to keep ARM CPU usage optimal.
@@ -301,3 +385,4 @@ This will print a list of all detected devices on your computer.
   4. The local temporary `meeting.wav` and the generated markdown transcript files are immediately deleted after successful upload to maintain a **`0-byte` permanent disk footprint** on the Coral board.
 
 * **Acoustic Events**: Background sounds (e.g. laughter, clapping, coughing) detected by the YAMNet model on the Coral Board are printed on the server console in real-time and automatically integrated into the transcription report by Gemini (e.g., `[Risos]`, `[Palmas]`).
+

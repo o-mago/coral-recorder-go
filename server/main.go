@@ -116,96 +116,22 @@ func main() {
 	}
 	log.Printf("Starting local Python audio processor using: %s\n", pythonExe)
 
-	cmd := exec.Command(pythonExe, "coral_audio.py")
-	cmd.Dir = "."
-	cmd.Stderr = os.Stderr
-
-	stdin, err := cmd.StdinPipe()
-	if err != nil {
-		log.Fatalf("Failed to create stdin pipe for Python processor: %v", err)
-	}
-
-	stdout, err := cmd.StdoutPipe()
-	if err != nil {
-		log.Fatalf("Failed to create stdout pipe for Python processor: %v", err)
-	}
-
-	if err := cmd.Start(); err != nil {
-		log.Fatalf("Failed to start local Python processor: %v. Make sure Python 3 is installed.", err)
-	}
-	defer func() {
-		_ = cmd.Process.Kill()
-	}()
-
-	// Event list and recording status
-	var events []string
-	var recordingStarted bool
-	var recordingDone bool
-	doneChan := make(chan bool)
-
-	// Goroutine to read stdout from Python in real-time
-	go func() {
-		scanner := bufio.NewScanner(stdout)
-		for scanner.Scan() {
-			line := scanner.Text()
-			var msg CoralMessage
-			if err := json.Unmarshal([]byte(line), &msg); err != nil {
-				continue
-			}
-
-			switch msg.Type {
-			case "control":
-				if msg.Value == "start" {
-					log.Println(">>> [Coral Edge TPU] 'GO' signal detected! Starting recording...")
-					recordingStarted = true
-				} else if msg.Value == "done" {
-					log.Println(">>> [Coral Edge TPU] 'STOP' signal detected! Stopping recording...")
-					recordingDone = true
-					doneChan <- true
-					return
-				}
-			case "event":
-				eventStr := fmt.Sprintf("[%s] Acoustic event: %s", msg.Timestamp, msg.Value)
-				log.Printf(">>> [Coral Edge TPU Event] %s", eventStr)
-				events = append(events, eventStr)
-			}
-		}
-		doneChan <- true
-	}()
-
-	// Stream execution
-	var localMicChan chan []byte
-	var localErrChan chan error
-	var localStopChan chan bool
-
-	if localMode {
-		localMicChan = make(chan []byte, 100)
-		localErrChan = make(chan error, 1)
-		localStopChan = make(chan bool)
-		go startLocalAudio(selectedDevice, localMicChan, localErrChan, localStopChan)
-		log.Println("Monitoring local microphone. Ready to start recording locally via voice commands.")
-	} else {
-		log.Println("Waiting for client stream to start (explicit network mode)...")
-	}
+	// Signal that the server is up and waiting for the first recording.
+	ledReady()
 
 	udpChan := make(chan []byte, 100)
-	clientConnectedChan := make(chan string, 1)
 	udpErrChan := make(chan error, 1)
 
+	// Persistent UDP receiver goroutine — runs for the lifetime of the server.
 	go func() {
 		buf := make([]byte, 4096)
-		first := true
 		for {
-			n, remoteAddr, err := conn.ReadFromUDP(buf)
+			n, _, err := conn.ReadFromUDP(buf)
 			if err != nil {
 				udpErrChan <- err
 				return
 			}
 			if n > 0 {
-				if first {
-					clientConnectedChan <- remoteAddr.String()
-					first = false
-				}
 				data := make([]byte, n)
 				copy(data, buf[:n])
 				udpChan <- data
@@ -213,120 +139,207 @@ func main() {
 		}
 	}()
 
-	var activeSource string = "mic"
-	if !localMode {
-		activeSource = "net"
-	}
+	// Main session loop: each iteration is one full recording session.
+	// After transcription completes the server restarts and waits for the next session.
+	for sessionNum := 1; ; sessionNum++ {
+		if sessionNum > 1 {
+			log.Printf("\n=== [Session %d] Ready for new recording. Waiting for 'GO' voice command... ===\n", sessionNum)
+			ledReady()
+		}
 
-	var networkInactivityTimer *time.Timer
-	var networkTimeoutChan <-chan time.Time
+		// Per-session state
+		var events []string
+		var recordingStarted bool
+		var recordingDone bool
+		doneChan := make(chan bool, 1)
 
-	var startupTimeoutChan <-chan time.Time
-	if !localMode {
-		startupTimeoutChan = time.After(5 * time.Minute)
-	}
+		// Start a fresh Python audio processor for each session
+		cmd := exec.Command(pythonExe, "coral_audio.py")
+		cmd.Dir = "."
+		cmd.Stderr = os.Stderr
 
-	var networkStarted bool
+		stdin, err := cmd.StdinPipe()
+		if err != nil {
+			log.Printf("Failed to create stdin pipe for Python processor: %v", err)
+			return
+		}
 
-	for {
+		stdout, err := cmd.StdoutPipe()
+		if err != nil {
+			log.Printf("Failed to create stdout pipe for Python processor: %v", err)
+			return
+		}
+
+		if err := cmd.Start(); err != nil {
+			log.Printf("Failed to start local Python processor: %v. Make sure Python 3 is installed.", err)
+			return
+		}
+
+		// Goroutine to read stdout from Python in real-time
+		go func() {
+			scanner := bufio.NewScanner(stdout)
+			for scanner.Scan() {
+				line := scanner.Text()
+				var msg CoralMessage
+				if err := json.Unmarshal([]byte(line), &msg); err != nil {
+					continue
+				}
+				switch msg.Type {
+				case "control":
+					if msg.Value == "start" {
+						log.Println(">>> [Coral Edge TPU] 'GO' signal detected! Starting recording...")
+						recordingStarted = true
+						ledRecording()
+					} else if msg.Value == "done" {
+						log.Println(">>> [Coral Edge TPU] 'STOP' signal detected! Stopping recording...")
+						recordingDone = true
+						doneChan <- true
+						return
+					}
+				case "event":
+					eventStr := fmt.Sprintf("[%s] Acoustic event: %s", msg.Timestamp, msg.Value)
+					log.Printf(">>> [Coral Edge TPU Event] %s", eventStr)
+					events = append(events, eventStr)
+				}
+			}
+			doneChan <- true
+		}()
+
+		// Per-session local microphone setup
+		var localMicChan chan []byte
+		var localErrChan chan error
+		var localStopChan chan bool
+		localMicStopped := false
+
+		if localMode {
+			localMicChan = make(chan []byte, 100)
+			localErrChan = make(chan error, 1)
+			localStopChan = make(chan bool)
+			go startLocalAudio(selectedDevice, localMicChan, localErrChan, localStopChan)
+			log.Println("Monitoring local microphone. Ready to start recording locally via voice commands.")
+		} else {
+			log.Println("Waiting for client stream to start (explicit network mode)...")
+		}
+
+		// stopLocalMic safely closes localStopChan at most once per session.
+		stopLocalMic := func() {
+			if localMode && !localMicStopped {
+				close(localStopChan)
+				localMicStopped = true
+			}
+		}
+
+		activeSource := "mic"
+		if !localMode {
+			activeSource = "net"
+		}
+
+		var networkInactivityTimer *time.Timer
+		var networkTimeoutChan <-chan time.Time
+		var startupTimeoutChan <-chan time.Time
+		if !localMode {
+			startupTimeoutChan = time.After(5 * time.Minute)
+		}
+		var networkStarted bool
+
+	SessionLoop:
+		for {
+			select {
+			case <-doneChan:
+				log.Println("Python processor signaled done.")
+				stopLocalMic()
+				break SessionLoop
+
+			case err := <-localErrChan:
+				log.Printf("Local microphone recording error: %v", err)
+				localMicStopped = true // goroutine already exited
+				if activeSource == "mic" {
+					break SessionLoop
+				}
+
+			case err := <-udpErrChan:
+				// UDP socket errors are unrecoverable — the listener goroutine has exited.
+				log.Printf("UDP server error (unrecoverable): %v", err)
+				stopLocalMic()
+				stdin.Close()
+				_ = cmd.Process.Kill()
+				_ = cmd.Wait()
+				return
+
+			case data := <-udpChan:
+				if activeSource == "mic" {
+					// First UDP data received: switch from local mic to network mode.
+					log.Println(">>> Client connection detected (usb or network). Switching from Standalone (mic) to Client-Server (network) mode...")
+					stopLocalMic()
+					activeSource = "net"
+				}
+				if activeSource == "net" {
+					if !networkStarted {
+						log.Println(">>> Client stream started.")
+						networkStarted = true
+						networkInactivityTimer = time.NewTimer(10 * time.Second)
+						networkTimeoutChan = networkInactivityTimer.C
+					} else if networkInactivityTimer != nil {
+						networkInactivityTimer.Stop()
+						networkInactivityTimer = time.NewTimer(10 * time.Second)
+						networkTimeoutChan = networkInactivityTimer.C
+					}
+					if _, err := stdin.Write(data); err != nil {
+						log.Printf("Error sending network audio to Python processor: %v", err)
+						break SessionLoop
+					}
+				}
+
+			case data := <-localMicChan:
+				if activeSource == "mic" {
+					if _, err := stdin.Write(data); err != nil {
+						log.Printf("Error sending local audio to Python processor: %v", err)
+						stopLocalMic()
+						break SessionLoop
+					}
+				}
+
+			case <-networkTimeoutChan:
+				if activeSource == "net" && networkStarted {
+					log.Println("End of audio transmission due to network inactivity (timeout).")
+					break SessionLoop
+				}
+
+			case <-startupTimeoutChan:
+				if activeSource == "net" && !networkStarted {
+					log.Println("Timeout waiting for client stream to start in explicit network mode.")
+					break SessionLoop
+				}
+			}
+		}
+
+		// Signal EOF to Python and wait for it to flush and exit
+		stdin.Close()
+
 		select {
 		case <-doneChan:
-			log.Println("Python processor finished.")
-			if localMode && activeSource == "mic" {
-				close(localStopChan)
-			}
-			goto EndLoop
-
-		case err := <-localErrChan:
-			log.Printf("Local microphone recording error: %v", err)
-			if activeSource == "mic" {
-				close(localStopChan)
-				goto EndLoop
-			}
-
-		case err := <-udpErrChan:
-			log.Printf("UDP server error: %v", err)
-			if activeSource == "net" {
-				goto EndLoop
-			}
-
-		case clientAddr := <-clientConnectedChan:
-			log.Printf(">>> Client connection detected from %s (usb or network)", clientAddr)
-			if activeSource == "mic" {
-				log.Println(">>> Switching from Standalone (mic) to Client-Server (network) mode...")
-				activeSource = "net"
-				close(localStopChan) // Stop the local mic stream
-			}
-			networkStarted = true
-			networkInactivityTimer = time.NewTimer(10 * time.Second)
-			networkTimeoutChan = networkInactivityTimer.C
-
-		case data := <-localMicChan:
-			if activeSource == "mic" {
-				_, err := stdin.Write(data)
-				if err != nil {
-					log.Printf("Error sending local audio to Python processor: %v", err)
-					close(localStopChan)
-					goto EndLoop
-				}
-			}
-
-		case data := <-udpChan:
-			if activeSource == "net" {
-				if networkInactivityTimer != nil {
-					networkInactivityTimer.Stop()
-					networkInactivityTimer = time.NewTimer(10 * time.Second)
-					networkTimeoutChan = networkInactivityTimer.C
-				}
-				_, err := stdin.Write(data)
-				if err != nil {
-					log.Printf("Error sending network audio to Python processor: %v", err)
-					goto EndLoop
-				}
-			}
-
-		case <-networkTimeoutChan:
-			if activeSource == "net" && networkStarted {
-				log.Println("End of audio transmission due to network inactivity (timeout).")
-				goto EndLoop
-			}
-
-		case <-startupTimeoutChan:
-			if activeSource == "net" && !networkStarted {
-				log.Println("Timeout waiting for client stream to start in explicit network mode.")
-				goto EndLoop
-			}
-		}
-	}
-
-EndLoop:
-	// Close stdin to signal EOF to Python (tells script to close WAV and exit if recording)
-	stdin.Close()
-
-	// Wait for the Python event reader to finish
-	select {
-	case <-doneChan:
-		log.Println("Coral Python processor finished.")
-	case <-time.After(5 * time.Second):
-		log.Println("Warning: Timeout waiting for Python processor messages to finish.")
-	}
-
-	// Wait for the Python subprocess to exit completely
-	_ = cmd.Wait()
-
-	// If recording was started, run transcription
-	if recordingStarted {
-		if !recordingDone && activeSource == "net" {
-			log.Println("Warning: Recording interrupted by network timeout before 'STOP' voice command.")
+			log.Println("Coral Python processor finished.")
+		case <-time.After(5 * time.Second):
+			log.Println("Warning: Timeout waiting for Python processor messages to finish.")
 		}
 
-		log.Println("Starting upload and transcription of the meeting...")
-		ctx := context.Background()
-		err = uploadAndTranscribe(ctx, "meeting.wav", events)
-		if err != nil {
-			log.Fatalf("Error during transcription processing: %v", err)
+		_ = cmd.Process.Kill()
+		_ = cmd.Wait()
+
+		// Transcribe if recording was started during this session
+		if recordingStarted {
+			if !recordingDone && activeSource == "net" {
+				log.Println("Warning: Recording interrupted by network timeout before 'STOP' voice command.")
+			}
+			log.Println("Starting upload and transcription of the meeting...")
+			ledProcessing()
+			ctx := context.Background()
+			if err := uploadAndTranscribe(ctx, "meeting.wav", events); err != nil {
+				log.Printf("Error during transcription processing: %v", err)
+				ledError() // blinks red 5x, then returns to green (ready)
+			}
+		} else {
+			log.Println("No audio was recorded. Skipping transcription.")
 		}
-	} else {
-		log.Println("No audio was recorded. Skipping transcription.")
 	}
 }

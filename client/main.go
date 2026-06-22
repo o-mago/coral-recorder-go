@@ -69,15 +69,22 @@ func main() {
 	}
 	defer conn.Close()
 
-	buffer := make([]int16, 1024)
+	// Use all available input channels (e.g. mic ch1 + BlackHole ch2/ch3 on an Aggregate Device)
+	numChannels := selectedDevice.MaxInputChannels
+	if numChannels < 1 {
+		numChannels = 1
+	}
+	framesPerBuffer := 1024
+	// Interleaved multi-channel buffer: [ch0_f0, ch1_f0, ..., ch0_f1, ch1_f1, ...]
+	multiBuffer := make([]int16, framesPerBuffer*numChannels)
 
 	// Configure stream parameters for input-only stream
 	params := portaudio.LowLatencyParameters(selectedDevice, nil)
-	params.Input.Channels = 1
+	params.Input.Channels = numChannels
 	params.SampleRate = 16000
-	params.FramesPerBuffer = len(buffer)
+	params.FramesPerBuffer = framesPerBuffer
 
-	stream, err := portaudio.OpenStream(params, &buffer)
+	stream, err := portaudio.OpenStream(params, &multiBuffer)
 	if err != nil {
 		log.Fatalf("Failed to open PortAudio stream: %v", err)
 	}
@@ -89,15 +96,15 @@ func main() {
 	}
 	defer stream.Stop()
 
-	log.Printf("Streaming audio over UDP to %s...\n", serverAddr)
+	log.Printf("Streaming audio over UDP to %s... (%d input channel(s), downmixed to mono)\n", serverAddr, numChannels)
 	for {
 		err = stream.Read()
 		if err != nil {
 			log.Printf("Failed to read audio data: %v", err)
 			break
 		}
-		// Convert int16 to bytes and send over the network
-		_, err = conn.Write(int16ToBytes(buffer))
+		// Downmix all channels to mono by averaging, then send
+		_, err = conn.Write(int16ToBytes(downmixToMono(multiBuffer, numChannels)))
 		if err != nil {
 			log.Printf("Failed to send data over UDP: %v", err)
 			break
@@ -106,9 +113,12 @@ func main() {
 }
 
 // getUSBIP scans local network interfaces and returns the matching subnet IP for the Coral board.
+// It uses two passes: first checking dedicated USB subnets on physical interfaces, then falling
+// back to 192.168.2.x which macOS Internet Sharing (bridge100) uses as its DHCP subnet.
 func getUSBIP() string {
 	interfaces, err := net.Interfaces()
 	if err == nil {
+		// First pass: check for dedicated USB Ethernet subnets
 		for _, iface := range interfaces {
 			addrs, err := iface.Addrs()
 			if err != nil {
@@ -116,17 +126,31 @@ func getUSBIP() string {
 			}
 			for _, addr := range addrs {
 				ipnet, ok := addr.(*net.IPNet)
-				if ok && !ipnet.IP.IsLoopback() {
-					if ipnet.IP.To4() != nil {
-						ipStr := ipnet.IP.String()
-						// If host is on 192.168.2.x subnet, the board is at 192.168.2.2
-						if len(ipStr) >= 10 && ipStr[:10] == "192.168.2." {
-							return "192.168.2.2"
-						}
-						// If host is on 192.168.100.x subnet, the board is at 192.168.100.2
-						if len(ipStr) >= 12 && ipStr[:12] == "192.168.100." {
-							return "192.168.100.2"
-						}
+				if ok && !ipnet.IP.IsLoopback() && ipnet.IP.To4() != nil {
+					ipStr := ipnet.IP.String()
+					// If host is on 192.168.137.x subnet, the board is at 192.168.137.2
+					if len(ipStr) >= 12 && ipStr[:12] == "192.168.137." {
+						return "192.168.137.2"
+					}
+					// If host is on 192.168.100.x subnet, the board is at 192.168.100.2
+					if len(ipStr) >= 12 && ipStr[:12] == "192.168.100." {
+						return "192.168.100.2"
+					}
+				}
+			}
+		}
+		// Second pass: accept 192.168.2.x on any interface
+		for _, iface := range interfaces {
+			addrs, err := iface.Addrs()
+			if err != nil {
+				continue
+			}
+			for _, addr := range addrs {
+				ipnet, ok := addr.(*net.IPNet)
+				if ok && !ipnet.IP.IsLoopback() && ipnet.IP.To4() != nil {
+					ipStr := ipnet.IP.String()
+					if len(ipStr) >= 10 && ipStr[:10] == "192.168.2." {
+						return "192.168.2.2"
 					}
 				}
 			}
@@ -134,6 +158,24 @@ func getUSBIP() string {
 	}
 	// Default fallback to 192.168.100.2 if neither is found
 	return "192.168.100.2"
+}
+
+// downmixToMono averages all interleaved channels into a single mono channel.
+// input layout: [ch0_f0, ch1_f0, ..., chN_f0, ch0_f1, ch1_f1, ...]
+func downmixToMono(input []int16, numChannels int) []int16 {
+	if numChannels <= 1 {
+		return input
+	}
+	numFrames := len(input) / numChannels
+	mono := make([]int16, numFrames)
+	for f := 0; f < numFrames; f++ {
+		var sum int32
+		for c := 0; c < numChannels; c++ {
+			sum += int32(input[f*numChannels+c])
+		}
+		mono[f] = int16(sum / int32(numChannels))
+	}
+	return mono
 }
 
 // int16ToBytes converts an int16 slice to a little-endian byte slice.
