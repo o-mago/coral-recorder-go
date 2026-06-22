@@ -253,38 +253,28 @@ def main():
                     # 1. Full phrase matching for Portuguese to prevent false triggers during conversational talk
                     # 2. Isolated word matching for short keywords like "start"/"stop"/"go"/"parar"/"terminar"
                     text_clean = text.strip()
+                    words = text_clean.split()
                     
-                    # Check start phrases (requires "coral" + a start keyword)
-                    if "coral" in text:
-                        start_keywords = [
-                            "iniciar gravação", "iniciar gravacao",
-                            "começar gravação", "comecar gravacao",
-                            "começar a gravar", "comecar a gravar",
-                            "inicie gravação", "inicie gravacao",
-                            "comece a gravar", "comece gravar",
-                            "iniciar", "começar", "comecar", "inicie", "comece", "gravar",
-                            "start", "go"
-                        ]
-                        for kw in start_keywords:
-                            if kw in text:
-                                start_command = True
-                                start_trigger_word = f"coral + {kw}"
-                                break
-
-                    # Check stop phrases (requires "coral" + a stop keyword)
-                    if "coral" in text:
-                        stop_keywords = [
-                            "parar gravação", "parar gravacao",
-                            "terminar gravação", "terminar gravacao",
-                            "encerrar gravação", "encerrar gravacao",
-                            "parar", "terminar", "encerrar",
-                            "stop"
-                        ]
-                        for kw in stop_keywords:
-                            if kw in text:
-                                stop_command = True
-                                stop_trigger_word = f"coral + {kw}"
-                                break
+                    if "coral" in words:
+                        coral_idx = words.index("coral")
+                        # Enforce that the command keyword must appear within 2 words of the wake-word "coral"
+                        for distance in range(1, 3):
+                            if coral_idx + distance < len(words):
+                                candidate = words[coral_idx + distance]
+                                
+                                # Check start keywords
+                                start_keywords = ["iniciar", "inicie", "começar", "comecar", "comece", "gravar", "gravação", "gravacao", "start", "go"]
+                                if candidate in start_keywords:
+                                    start_command = True
+                                    start_trigger_word = f"coral + {candidate}"
+                                    break
+                                    
+                                # Check stop keywords
+                                stop_keywords = ["parar", "terminar", "encerrar", "stop"]
+                                if candidate in stop_keywords:
+                                    stop_command = True
+                                    stop_trigger_word = f"coral + {candidate}"
+                                    break
                 except Exception as e:
                     sys.stderr.write(f"Vosk inference error: {e}\n")
 
