@@ -17,7 +17,7 @@ import (
 
 func main() {
 	// Start the local HTTP/HTTPS tunneling proxy in the background
-	proxyPort := 8080
+	proxyPort := 8082
 	go startProxy(proxyPort)
 
 	// Automatically configure ADB reverse port forwarding to the board
