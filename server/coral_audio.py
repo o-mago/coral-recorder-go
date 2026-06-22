@@ -101,14 +101,28 @@ def load_tflite_interpreter(model_path):
             sys.stderr.write(f"Failed to load IREE model {model_path}: {e}\n")
             return None
 
+    tflite = None
     try:
         import tflite_runtime.interpreter as tflite
+    except ImportError:
+        try:
+            import ai_edge_litert.interpreter as tflite
+        except ImportError:
+            try:
+                import tensorflow.lite as tflite
+            except ImportError:
+                pass
+
+    if tflite is not None:
         # Attempt to load using Edge TPU delegate if the model is compiled for Edge TPU
         if "edgetpu" in model_path:
             try:
                 # Default path for libedgetpu on Linux/Coral Dev Boards
-                delegate = tflite.load_delegate("libedgetpu.so.1")
-                return tflite.Interpreter(model_path, experimental_delegates=[delegate])
+                if hasattr(tflite, "load_delegate"):
+                    delegate = tflite.load_delegate("libedgetpu.so.1")
+                    return tflite.Interpreter(model_path, experimental_delegates=[delegate])
+                else:
+                    raise AttributeError("load_delegate not found in module")
             except Exception as e:
                 sys.stderr.write(f"Edge TPU not available for {model_path}, trying CPU: {e}\n")
                 # Fall back to the CPU version of the model if available
@@ -118,13 +132,9 @@ def load_tflite_interpreter(model_path):
                 return None
         else:
             return tflite.Interpreter(model_path)
-    except ImportError:
-        try:
-            import tensorflow.lite as tflite
-            return tflite.Interpreter(model_path)
-        except ImportError:
-            sys.stderr.write("Warning: tflite_runtime or tensorflow is not installed.\n")
-            return None
+    else:
+        sys.stderr.write("Warning: neither tflite_runtime, ai_edge_litert, nor tensorflow is installed.\n")
+        return None
 
 def calculate_rms(audio_data):
     """Calculates the RMS energy of an audio buffer (used as fallback for VAD/Commands)."""

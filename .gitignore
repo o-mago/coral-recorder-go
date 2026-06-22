@@ -19,8 +19,10 @@ server/transcricao_*.md
 Transcript_Meeting_*.md
 server/Transcript_Meeting_*.md
 
-# Downloaded TFLite models
+# Downloaded TFLite and Vosk models
 /server/models/
+/server/model/
+*.vmfb
 
 # Python caching and environments
 __pycache__/

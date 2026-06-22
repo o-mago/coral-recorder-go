@@ -56,7 +56,7 @@ func main() {
 
 	serverAddr := *serverFlag
 	if *usbFlag {
-		serverAddr = "192.168.100.2:5000"
+		serverAddr = getUSBIP() + ":5000"
 		log.Printf("Connecting to Coral via USB-C (address: %s)\n", serverAddr)
 	} else {
 		log.Printf("Connecting to Coral via network (address: %s)\n", serverAddr)
@@ -103,6 +103,37 @@ func main() {
 			break
 		}
 	}
+}
+
+// getUSBIP scans local network interfaces and returns the matching subnet IP for the Coral board.
+func getUSBIP() string {
+	interfaces, err := net.Interfaces()
+	if err == nil {
+		for _, iface := range interfaces {
+			addrs, err := iface.Addrs()
+			if err != nil {
+				continue
+			}
+			for _, addr := range addrs {
+				ipnet, ok := addr.(*net.IPNet)
+				if ok && !ipnet.IP.IsLoopback() {
+					if ipnet.IP.To4() != nil {
+						ipStr := ipnet.IP.String()
+						// If host is on 192.168.2.x subnet, the board is at 192.168.2.2
+						if len(ipStr) >= 10 && ipStr[:10] == "192.168.2." {
+							return "192.168.2.2"
+						}
+						// If host is on 192.168.100.x subnet, the board is at 192.168.100.2
+						if len(ipStr) >= 12 && ipStr[:12] == "192.168.100." {
+							return "192.168.100.2"
+						}
+					}
+				}
+			}
+		}
+	}
+	// Default fallback to 192.168.100.2 if neither is found
+	return "192.168.100.2"
 }
 
 // int16ToBytes converts an int16 slice to a little-endian byte slice.

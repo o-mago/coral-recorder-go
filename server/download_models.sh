@@ -9,7 +9,7 @@ echo "=== Downloading Audio Models for Coral Recorder ==="
 # 1. YAMNet (Audio Event Classification and Speech Detection)
 if [ ! -f "models/yamnet.tflite" ]; then
     echo "Downloading YAMNet (CPU TFLite)..."
-    curl -L -o models/yamnet.tflite "https://storage.googleapis.com/tfhub-lite-models/google/lite-model/yamnet/classification/tflite/1.tflite"
+    curl -L -o models/yamnet.tflite "https://storage.googleapis.com/download.tensorflow.org/models/tflite/task_library/audio_classification/android/lite-model_yamnet_classification_tflite_1.tflite"
 else
     echo "YAMNet model already exists. Skipping..."
 fi
@@ -17,7 +17,10 @@ fi
 # 2. Speech Commands (Wake Word / Commands Model) - CPU
 if [ ! -f "models/voice_commands.tflite" ]; then
     echo "Downloading Speech Commands (CPU TFLite)..."
-    curl -L -o models/voice_commands.tflite "https://raw.githubusercontent.com/google-coral/project-keyword-spotter/master/models/voice_commands_v0.7.tflite"
+    curl -L -o models/conv_actions_tflite.zip "https://storage.googleapis.com/download.tensorflow.org/models/tflite/conv_actions_tflite.zip"
+    unzip -q models/conv_actions_tflite.zip -d models/
+    mv models/conv_actions_frozen.tflite models/voice_commands.tflite
+    rm -f models/conv_actions_tflite.zip models/conv_actions_labels.txt
 else
     echo "Speech Commands CPU model already exists. Skipping..."
 fi
@@ -43,53 +46,18 @@ else
     echo "Vosk Portuguese Model directory 'model' already exists. Skipping..."
 fi
 
-# 5. Compile to Synaptics Astra NPU format (.vmfb) if torq-compile is available
-if command -v torq-compile &> /dev/null; then
-    echo "=== Detected torq-compile tool. Compiling models for Synaptics Astra NPU... ==="
-    
-    if [ ! -f "models/yamnet.vmfb" ]; then
-        echo "Compiling YAMNet for Synaptics Astra NPU..."
-        torq-compile --input-model=models/yamnet.tflite --output-file=models/yamnet.vmfb --target-device=synaptics-npu
-    else
-        echo "yamnet.vmfb already exists. Skipping..."
-    fi
-
-    if [ ! -f "models/voice_commands.vmfb" ]; then
-        echo "Compiling Speech Commands for Synaptics Astra NPU..."
-        torq-compile --input-model=models/voice_commands.tflite --output-file=models/voice_commands.vmfb --target-device=synaptics-npu
-    else
-        echo "voice_commands.vmfb already exists. Skipping..."
-    fi
-elif command -v docker &> /dev/null; then
-    echo "=== 'torq-compile' not found, but 'docker' is available. Attempting to compile using Torq compiler Docker container... ==="
-    
-    # Try compiling YAMNet first
-    if [ ! -f "models/yamnet.vmfb" ]; then
-        echo "Compiling YAMNet via Docker..."
-        if docker run --rm -v "$(pwd):/work" -w /work ghcr.io/synaptics-torq/torq-compiler/compiler:main \
-            torq-compile --input-model=models/yamnet.tflite --output-file=models/yamnet.vmfb --target-device=synaptics-npu; then
-            echo "YAMNet compiled successfully!"
-        else
-            echo "Failed to compile YAMNet. You may need to log in to GitHub Container Registry first (docker login ghcr.io)."
-        fi
-    else
-        echo "yamnet.vmfb already exists. Skipping..."
-    fi
-
-    # Try compiling Speech Commands
-    if [ ! -f "models/voice_commands.vmfb" ]; then
-        echo "Compiling Speech Commands via Docker..."
-        if docker run --rm -v "$(pwd):/work" -w /work ghcr.io/synaptics-torq/torq-compiler/compiler:main \
-            torq-compile --input-model=models/voice_commands.tflite --output-file=models/voice_commands.vmfb --target-device=synaptics-npu; then
-            echo "Speech Commands compiled successfully!"
-        fi
-    else
-        echo "voice_commands.vmfb already exists. Skipping..."
-    fi
-else
-    echo "=== Note: 'torq-compile' and 'docker' not found on system path. ==="
-    echo "To utilize the Synaptics Astra SL2610 NPU, ensure you run 'torq-compile' manually"
-    echo "on a machine with the Synaptics toolchain or Docker installed."
-fi
+# 5. NPU Compilation Compatibility Note for Synaptics Astra SL2610
+echo ""
+echo "=== Synaptics Astra SL2610 NPU Compilation Status ==="
+echo "Note: The downloaded models contain signal pre-processing operations:"
+echo "  - YAMNet utilizes an RFFT (Real Fast Fourier Transform) resulting in complex numbers (complex<f32>),"
+echo "    which is not supported by the TOSA dialect standard."
+echo "  - Speech Commands utilizes custom TFLite operators ('AudioSpectrogram' and 'Mfcc') which are not"
+echo "    legalized to TOSA/NPU hardware instructions."
+echo ""
+echo "Therefore, these models cannot be compiled to .vmfb NPU format and will run on the board's"
+echo "ARM CPU using Google's highly optimized 'ai-edge-litert' runtime (or Edge TPU delegate for Coral)."
+echo "====================================================="
+echo ""
 
 echo "=== All models downloaded and configured successfully! ==="

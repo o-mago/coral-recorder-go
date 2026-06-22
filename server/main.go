@@ -12,8 +12,6 @@ import (
 	"time"
 
 	"encoding/json"
-
-	"github.com/gordonklaus/portaudio"
 )
 
 // CoralMessage defines the format of JSON messages sent by coral_audio.py
@@ -33,45 +31,30 @@ func main() {
 
 	// If we are listing devices or running in local mode, initialize PortAudio
 	if *listFlag || localMode {
-		err := portaudio.Initialize()
+		err := initializeAudio()
 		if err != nil {
 			log.Fatalf("Failed to initialize PortAudio on server: %v", err)
 		}
-		defer portaudio.Terminate()
+		defer terminateAudio()
 	}
 
 	if *listFlag {
-		devices, err := portaudio.Devices()
+		err := listAudioDevices()
 		if err != nil {
-			log.Fatalf("Failed to get audio devices: %v", err)
-		}
-		fmt.Println("Available Audio Input Devices on Server:")
-		for i, dev := range devices {
-			if dev.MaxInputChannels > 0 {
-				fmt.Printf("[%d] Name: %s (Host API: %s, Max Input Channels: %d)\n", i, dev.Name, dev.HostApi.Name, dev.MaxInputChannels)
-			}
+			log.Fatalf("Failed to list audio devices: %v", err)
 		}
 		os.Exit(0)
 	}
 
-	var selectedDevice *portaudio.DeviceInfo
+	var selectedDevice interface{}
 	if localMode {
-		devices, err := portaudio.Devices()
+		var deviceName string
+		var err error
+		selectedDevice, deviceName, err = selectAudioDevice(*deviceFlag)
 		if err != nil {
-			log.Fatalf("Failed to get audio devices: %v", err)
+			log.Fatalf("Failed to select audio device: %v", err)
 		}
-		if *deviceFlag >= 0 && *deviceFlag < len(devices) {
-			selectedDevice = devices[*deviceFlag]
-			if selectedDevice.MaxInputChannels == 0 {
-				log.Fatalf("Selected device [%d] is not an input device", *deviceFlag)
-			}
-		} else {
-			selectedDevice, err = portaudio.DefaultInputDevice()
-			if err != nil {
-				log.Fatalf("Failed to get default input device: %v", err)
-			}
-		}
-		log.Printf("Running in Standalone Mode. Using Input Device: %s\n", selectedDevice.Name)
+		log.Printf("Running in Standalone Mode. Using Input Device: %s\n", deviceName)
 	}
 
 	addr, err := net.ResolveUDPAddr("udp", ":5000")
@@ -89,6 +72,7 @@ func main() {
 	// Start the local Python audio processor subprocess
 	cmd := exec.Command("python3", "coral_audio.py")
 	cmd.Dir = "."
+	cmd.Stderr = os.Stderr
 
 	stdin, err := cmd.StdinPipe()
 	if err != nil {
@@ -152,7 +136,7 @@ func main() {
 		localMicChan = make(chan []byte, 100)
 		localErrChan = make(chan error, 1)
 		localStopChan = make(chan bool)
-		go recordLocalAudio(selectedDevice, localMicChan, localErrChan, localStopChan)
+		go startLocalAudio(selectedDevice, localMicChan, localErrChan, localStopChan)
 		log.Println("Monitoring local microphone. Ready to start recording locally via voice commands.")
 	} else {
 		log.Println("Waiting for client stream to start (explicit network mode)...")

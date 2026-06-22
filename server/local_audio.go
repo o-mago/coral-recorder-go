@@ -1,17 +1,68 @@
+//go:build !no_portaudio
+
 package main
 
 import (
 	"encoding/binary"
+	"errors"
+	"fmt"
 	"log"
 
 	"github.com/gordonklaus/portaudio"
 )
 
-// recordLocalAudio records audio from the selected input device and sends it to dataChan
-func recordLocalAudio(device *portaudio.DeviceInfo, dataChan chan []byte, errChan chan error, stopChan chan bool) {
+func initializeAudio() error {
+	return portaudio.Initialize()
+}
+
+func terminateAudio() {
+	portaudio.Terminate()
+}
+
+func listAudioDevices() error {
+	devices, err := portaudio.Devices()
+	if err != nil {
+		return err
+	}
+	fmt.Println("Available Audio Input Devices on Server:")
+	for i, dev := range devices {
+		if dev.MaxInputChannels > 0 {
+			fmt.Printf("[%d] Name: %s (Host API: %s, Max Input Channels: %d)\n", i, dev.Name, dev.HostApi.Name, dev.MaxInputChannels)
+		}
+	}
+	return nil
+}
+
+func selectAudioDevice(index int) (interface{}, string, error) {
+	devices, err := portaudio.Devices()
+	if err != nil {
+		return nil, "", err
+	}
+	var selectedDevice *portaudio.DeviceInfo
+	if index >= 0 && index < len(devices) {
+		selectedDevice = devices[index]
+		if selectedDevice.MaxInputChannels == 0 {
+			return nil, "", fmt.Errorf("selected device [%d] is not an input device", index)
+		}
+	} else {
+		selectedDevice, err = portaudio.DefaultInputDevice()
+		if err != nil {
+			return nil, "", err
+		}
+	}
+	return selectedDevice, selectedDevice.Name, nil
+}
+
+func startLocalAudio(device interface{}, dataChan chan []byte, errChan chan error, stopChan chan bool) {
+	devInfo, ok := device.(*portaudio.DeviceInfo)
+	if !ok || devInfo == nil {
+		errChan <- errors.New("invalid portaudio device info")
+		return
+	}
+	
 	buffer := make([]int16, 1024)
 	
-	params := portaudio.LowLatencyParameters(device, nil)
+	params := portaudio.LowLatencyParameters(devInfo, nil)
 	params.Input.Channels = 1
 	params.SampleRate = 16000
 	params.FramesPerBuffer = len(buffer)
@@ -47,7 +98,6 @@ func recordLocalAudio(device *portaudio.DeviceInfo, dataChan chan []byte, errCha
 	}
 }
 
-// localInt16ToBytes converts an int16 slice to a little-endian byte slice.
 func localInt16ToBytes(input []int16) []byte {
 	output := make([]byte, len(input)*2)
 	for i, v := range input {
