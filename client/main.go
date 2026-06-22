@@ -4,14 +4,31 @@ import (
 	"encoding/binary"
 	"flag"
 	"fmt"
+	"io"
 	"log"
 	"net"
+	"net/http"
 	"os"
+	"os/exec"
+	"time"
 
 	"github.com/gordonklaus/portaudio"
 )
 
 func main() {
+	// Start the local HTTP/HTTPS tunneling proxy in the background
+	proxyPort := 8080
+	go startProxy(proxyPort)
+
+	// Automatically configure ADB reverse port forwarding to the board
+	log.Printf("Configuring ADB reverse port forwarding (tcp:%d -> tcp:%d)...\n", proxyPort, proxyPort)
+	cmd := exec.Command("adb", "reverse", fmt.Sprintf("tcp:%d", proxyPort), fmt.Sprintf("tcp:%d", proxyPort))
+	if err := cmd.Run(); err != nil {
+		log.Printf("Warning: failed to run 'adb reverse': %v (make sure the board is connected via USB and 'adb' is in your PATH)\n", err)
+	} else {
+		log.Println("ADB reverse port forwarding configured successfully!")
+	}
+
 	listFlag := flag.Bool("list", false, "List available audio input devices")
 	deviceFlag := flag.Int("device", -1, "Select input device index (default is default system input)")
 	serverFlag := flag.String("server", "localhost:5000", "UDP server address (ip:port)")
@@ -185,4 +202,64 @@ func int16ToBytes(input []int16) []byte {
 		binary.LittleEndian.PutUint16(output[i*2:], uint16(v))
 	}
 	return output
+}
+
+// startProxy launches a local HTTP/HTTPS tunneling proxy.
+func startProxy(port int) {
+	server := &http.Server{
+		Addr: fmt.Sprintf(":%d", port),
+		Handler: http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+			if r.Method == http.MethodConnect {
+				// HTTPS Tunneling (CONNECT method)
+				destConn, err := net.DialTimeout("tcp", r.Host, 10*time.Second)
+				if err != nil {
+					http.Error(w, err.Error(), http.StatusServiceUnavailable)
+					return
+				}
+				w.WriteHeader(http.StatusOK)
+				hijacker, ok := w.(http.Hijacker)
+				if !ok {
+					destConn.Close()
+					http.Error(w, "Hijacking not supported", http.StatusInternalServerError)
+					return
+				}
+				clientConn, _, err := hijacker.Hijack()
+				if err != nil {
+					destConn.Close()
+					return
+				}
+				go transfer(destConn, clientConn)
+				go transfer(clientConn, destConn)
+			} else {
+				// Standard HTTP forwarding
+				transport := http.DefaultTransport
+				outReq := new(http.Request)
+				*outReq = *r
+				outReq.RequestURI = ""
+				res, err := transport.RoundTrip(outReq)
+				if err != nil {
+					http.Error(w, err.Error(), http.StatusBadGateway)
+					return
+				}
+				defer res.Body.Close()
+				for k, vv := range res.Header {
+					for _, v := range vv {
+						w.Header().Add(k, v)
+					}
+				}
+				w.WriteHeader(res.StatusCode)
+				io.Copy(w, res.Body)
+			}
+		}),
+	}
+	log.Printf("HTTP/HTTPS Proxy started on local port %d\n", port)
+	if err := server.ListenAndServe(); err != nil && err != http.ErrServerClosed {
+		log.Printf("Proxy server error: %v\n", err)
+	}
+}
+
+func transfer(destination io.WriteCloser, source io.ReadCloser) {
+	defer destination.Close()
+	defer source.Close()
+	io.Copy(destination, source)
 }
