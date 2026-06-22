@@ -241,11 +241,30 @@ def main():
                         res = json.loads(vosk_recognizer.PartialResult())
                         text = res.get("partial", "").lower()
 
-                    # Detect Portuguese keywords
-                    if "iniciar gravação" in text or "iniciar gravacao" in text or ("iniciar" in text and "gravar" in text):
-                        start_command = True
-                    elif "parar gravação" in text or "parar gravacao" in text or "parar" in text or "finalizar" in text:
-                        stop_command = True
+                    # Detect Portuguese and English keywords
+                    start_keywords = [
+                        "iniciar gravação", "iniciar gravacao",
+                        "começar gravação", "comecar gravacao",
+                        "começar a gravar", "comecar a gravar",
+                        "iniciar", "começar", "comecar", "gravar",
+                        "start recording"
+                    ]
+                    stop_keywords = [
+                        "parar gravação", "parar gravacao",
+                        "terminar gravação", "terminar gravacao",
+                        "encerrar gravação", "encerrar gravacao",
+                        "parar", "terminar", "encerrar",
+                        "stop recording"
+                    ]
+
+                    for kw in start_keywords:
+                        if kw in text:
+                            start_command = True
+                            break
+                    for kw in stop_keywords:
+                        if kw in text:
+                            stop_command = True
+                            break
                 except Exception as e:
                     sys.stderr.write(f"Vosk inference error: {e}\n")
 
