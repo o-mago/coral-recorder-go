@@ -430,8 +430,7 @@ Create a new unit file at `/etc/systemd/system/coral-recorder.service` with root
 ```ini
 [Unit]
 Description=Coral Recorder - Audio capture and Gemini transcription server
-After=network-online.target sound.target
-Wants=network-online.target
+After=sound.target
 
 [Service]
 Type=simple
