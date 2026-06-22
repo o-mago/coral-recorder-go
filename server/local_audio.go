@@ -20,10 +20,21 @@ func terminateAudio() {
 }
 
 func listAudioDevices() error {
+	apis, err := portaudio.HostApis()
+	if err != nil {
+		log.Printf("Failed to get Host APIs: %v", err)
+	} else {
+		log.Printf("Found %d Host APIs:", len(apis))
+		for _, api := range apis {
+			log.Printf("  Host API: %s (type %d)", api.Name, api.Type)
+		}
+	}
+
 	devices, err := portaudio.Devices()
 	if err != nil {
 		return err
 	}
+	log.Printf("Found %d total devices in PortAudio", len(devices))
 	fmt.Println("Available Audio Input Devices on Server:")
 	for i, dev := range devices {
 		if dev.MaxInputChannels > 0 {
