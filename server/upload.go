@@ -129,7 +129,7 @@ func uploadAndTranscribe(ctx context.Context, filePath string, localEvents []str
 	}
 
 	// Upload to Google Drive
-	driveFileName := fmt.Sprintf("Transcript_Meeting_%s.md", timestamp)
+	driveFileName := fmt.Sprintf("%s_Transcript_Meeting.md", timestamp)
 	errUpload := uploadToDrive(ctx, localMdFile, driveFileName)
 	if errUpload != nil {
 		fmt.Printf("\nWarning: Failed to upload to Google Drive: %v\n", errUpload)
