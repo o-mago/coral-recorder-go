@@ -10,7 +10,7 @@ import numpy as np
 SAMPLE_RATE = 16000
 CHANNELS = 1
 SAMPLE_WIDTH = 2 # 16-bit
-CHUNK_SAMPLES = 7680 # ~0.48 seconds of audio
+CHUNK_SAMPLES = 1024 # ~0.064 seconds of audio (reduces command stop latency to ~64ms!)
 CHUNK_BYTES = CHUNK_SAMPLES * SAMPLE_WIDTH
 
 # Model Files
@@ -202,9 +202,11 @@ def main():
     wav_out = None
     
     # VAD Hangover parameters (prevents choppy recording by keeping buffer active)
-    vad_hangover_chunks = 3 # Keep recording active for ~1.5s after speech stops
+    # Keep recording active for ~1.5s after speech stops
+    vad_hangover_chunks = max(1, int(1.5 / (CHUNK_SAMPLES / SAMPLE_RATE)))
     vad_counter = 0
     yamnet_counter = 0
+    commands_counter = 0
 
     # RMS Threshold for Mock VAD
     MOCK_RMS_THRESHOLD = 300.0 
@@ -289,9 +291,17 @@ def main():
                 # Mock commands triggered by loud sound spikes
                 if not recording and rms > MOCK_RMS_THRESHOLD * 2:
                     start_command = True
-            else:
+            
+            if not mock_mode:
                 # --- SPEECH COMMANDS INFERENCE (Wake Word / Controls - Fallback to English TFLite) ---
                 if interpreter_commands and not vosk_recognizer:
+                    commands_counter += 1
+                    commands_interval = max(1, int(7680 / CHUNK_SAMPLES))
+                    run_commands_inference = (commands_counter % commands_interval == 0)
+                else:
+                    run_commands_inference = False
+
+                if run_commands_inference:
                     try:
                         input_details = interpreter_commands.get_input_details()
                         output_details = interpreter_commands.get_output_details()[0]
@@ -335,10 +345,11 @@ def main():
 
                 # --- YAMNET INFERENCE (VAD & Event Classification) ---
                 # Only run YAMNet during active recording to save CPU
-                # and run it every 2 chunks (~0.96s) since it covers a 0.975s window
+                # and run it every ~0.96 seconds (depending on CHUNK_SAMPLES)
                 if interpreter_yamnet and recording:
                     yamnet_counter += 1
-                    if yamnet_counter % 2 == 0:
+                    yamnet_interval = max(1, int(15360 / CHUNK_SAMPLES))
+                    if yamnet_counter % yamnet_interval == 0:
                         try:
                             input_details = interpreter_yamnet.get_input_details()[0]
                             output_details = interpreter_yamnet.get_output_details()[0]
