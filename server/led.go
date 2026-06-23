@@ -4,7 +4,6 @@ import (
 	"context"
 	"net/http"
 	"os"
-	"strings"
 	"sync"
 	"time"
 )
@@ -141,19 +140,6 @@ func ledErrorBlinkStop() {
 	}
 }
 
-// hasPendingFiles checks if there are any pending upload files on disk.
-func hasPendingFiles() bool {
-	files, err := os.ReadDir(getQueueDir())
-	if err != nil {
-		return false
-	}
-	for _, f := range files {
-		if !f.IsDir() && strings.HasPrefix(f.Name(), "pending_") && strings.HasSuffix(f.Name(), ".wav") {
-			return true
-		}
-	}
-	return false
-}
 
 // checkInternet performs a lightweight HTTP request to check if Google APIs are reachable.
 func checkInternet() bool {
@@ -192,7 +178,7 @@ func startInternetCheck(ctx context.Context) {
 
 // updateLED refreshes the physical LED states based on current server state and pending uploads.
 func updateLED() {
-	hasPending := hasPendingFiles()
+	hasFailed := hasFailedFiles()
 	netAvailable := GetInternetAvailable()
 
 	if currentServerState == StateRecording {
@@ -220,7 +206,7 @@ func updateLED() {
 			ledSet(ledGreen, true)
 		}
 
-		if hasPending {
+		if hasFailed {
 			// Error has precedence: blink red alongside solid idle colors
 			ledErrorBlinkStart()
 		} else {

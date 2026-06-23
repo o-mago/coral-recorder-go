@@ -42,6 +42,20 @@ func clearFileFailed(path string) {
 	delete(failedFiles, path)
 }
 
+func hasFailedFiles() bool {
+	failedFilesMutex.Lock()
+	defer failedFilesMutex.Unlock()
+	for path, failed := range failedFiles {
+		if failed {
+			if _, err := os.Stat(path); err == nil {
+				return true
+			}
+		}
+	}
+	return false
+}
+
+
 func initFailedFiles() {
 	queueDir := getQueueDir()
 	files, err := os.ReadDir(queueDir)
