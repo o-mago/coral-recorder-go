@@ -11,7 +11,8 @@ SAMPLE_RATE = 16000
 CHANNELS = 1
 SAMPLE_WIDTH = 2 # 16-bit
 CHUNK_SAMPLES = 1024 # ~0.064 seconds of audio (reduces command stop latency to ~64ms!)
-CHUNK_BYTES = CHUNK_SAMPLES * SAMPLE_WIDTH
+# Stereo input from client (L: Mic, R: Desktop) -> 2 channels
+CHUNK_BYTES = CHUNK_SAMPLES * SAMPLE_WIDTH * 2
 
 # Model Files
 MODEL_YAMNET = "models/yamnet.vmfb" if os.path.exists("models/yamnet.vmfb") else "models/yamnet.tflite"
@@ -207,6 +208,7 @@ def main():
     vad_counter = 0
     yamnet_counter = 0
     commands_counter = 0
+    vosk_counter = 0
 
     # RMS Threshold for Mock VAD
     MOCK_RMS_THRESHOLD = 300.0 
@@ -223,9 +225,13 @@ def main():
             # Convert read bytes to numpy int16 samples
             chunk_samples = np.frombuffer(raw_chunk, dtype=np.int16)
             
-            # Slide the 1-second audio window
-            audio_window = np.roll(audio_window, -len(chunk_samples))
-            audio_window[-len(chunk_samples):] = chunk_samples
+            # Extract channels: Left is Microphone, Right is Desktop
+            mic_channel = chunk_samples[0::2]
+            desktop_channel = chunk_samples[1::2]
+            
+            # Slide the 1-second audio window using only the microphone channel
+            audio_window = np.roll(audio_window, -len(mic_channel))
+            audio_window[-len(mic_channel):] = mic_channel
 
             # Normalize the window to float32 in [-1.0, 1.0] for models
             float_window = audio_window.astype(np.float32) / 32768.0
@@ -240,43 +246,47 @@ def main():
             # --- VOSK OFFLINE PORTUGUESE COMMAND DETECTION ---
             if vosk_recognizer:
                 try:
-                    # Feed the raw PCM chunk directly to Vosk
-                    if vosk_recognizer.AcceptWaveform(raw_chunk):
+                    text = ""
+                    # Feed only the microphone channel PCM chunk to Vosk
+                    if vosk_recognizer.AcceptWaveform(mic_channel.tobytes()):
                         res = json.loads(vosk_recognizer.Result())
                         text = res.get("text", "").lower()
                         if text:
                             sys.stderr.write(f"[Vosk Speech] Full Result: '{text}'\n")
                     else:
-                        res = json.loads(vosk_recognizer.PartialResult())
-                        text = res.get("partial", "").lower()
-                        if text:
-                            sys.stderr.write(f"[Vosk Speech] Partial: '{text}'\n")
+                        vosk_counter += 1
+                        if vosk_counter % 5 == 0:
+                            res = json.loads(vosk_recognizer.PartialResult())
+                            text = res.get("partial", "").lower()
+                            if text:
+                                sys.stderr.write(f"[Vosk Speech] Partial: '{text}'\n")
 
                     # 1. Full phrase matching for Portuguese to prevent false triggers during conversational talk
                     # 2. Isolated word matching for short keywords like "start"/"stop"/"go"/"parar"/"terminar"
-                    text_clean = text.strip()
-                    words = text_clean.split()
-                    
-                    if "coral" in words:
-                        coral_idx = words.index("coral")
-                        # Enforce that the command keyword must appear within 2 words of the wake-word "coral"
-                        for distance in range(1, 3):
-                            if coral_idx + distance < len(words):
-                                candidate = words[coral_idx + distance]
-                                
-                                # Check start keywords
-                                start_keywords = ["iniciar", "inicie", "começar", "comecar", "comece", "gravar", "gravação", "gravacao", "start", "go"]
-                                if candidate in start_keywords:
-                                    start_command = True
-                                    start_trigger_word = f"coral + {candidate}"
-                                    break
+                    if text:
+                        text_clean = text.strip()
+                        words = text_clean.split()
+                        
+                        if "coral" in words:
+                            coral_idx = words.index("coral")
+                            # Enforce that the command keyword must appear within 2 words of the wake-word "coral"
+                            for distance in range(1, 3):
+                                if coral_idx + distance < len(words):
+                                    candidate = words[coral_idx + distance]
                                     
-                                # Check stop keywords
-                                stop_keywords = ["parar", "terminar", "encerrar", "stop"]
-                                if candidate in stop_keywords:
-                                    stop_command = True
-                                    stop_trigger_word = f"coral + {candidate}"
-                                    break
+                                    # Check start keywords
+                                    start_keywords = ["iniciar", "inicie", "começar", "comecar", "comece", "gravar", "gravação", "gravacao", "start", "go"]
+                                    if candidate in start_keywords:
+                                        start_command = True
+                                        start_trigger_word = f"coral + {candidate}"
+                                        break
+                                        
+                                    # Check stop keywords
+                                    stop_keywords = ["parar", "terminar", "encerrar", "stop"]
+                                    if candidate in stop_keywords:
+                                        stop_command = True
+                                        stop_trigger_word = f"coral + {candidate}"
+                                        break
                 except Exception as e:
                     sys.stderr.write(f"Vosk inference error: {e}\n")
 
@@ -410,8 +420,9 @@ def main():
                     vad_counter = vad_hangover_chunks
 
                 if vad_counter > 0:
-                    # Write audio frames to the output WAV file
-                    wav_out.writeframes(raw_chunk)
+                    # Mix Left (Mic) and Right (Desktop) channels to mono before saving to keep meeting.wav format
+                    mono_mixed = (mic_channel.astype(np.int32) + desktop_channel.astype(np.int32)) // 2
+                    wav_out.writeframes(mono_mixed.astype(np.int16).tobytes())
                     vad_counter -= 1
                 
                 # Command to stop recording

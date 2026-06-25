@@ -124,7 +124,7 @@ func main() {
 	}
 	defer stream.Stop()
 
-	log.Printf("Streaming audio over UDP to %s... (%d input channel(s), downmixed to mono)\n", serverAddr, numChannels)
+	log.Printf("Streaming audio over UDP to %s... (%d input channel(s), stereo layout)\n", serverAddr, numChannels)
 	connected := true
 	var lastErrPrint time.Time
 
@@ -134,8 +134,8 @@ func main() {
 			log.Printf("Failed to read audio data: %v", err)
 			break
 		}
-		// Downmix all channels to mono by averaging, then send
-		_, err = conn.Write(int16ToBytes(downmixToMono(multiBuffer, numChannels)))
+		// Extract first 2 channels as stereo (L: Mic, R: Desktop) and send
+		_, err = conn.Write(int16ToBytes(extractStereo(multiBuffer, numChannels)))
 		if err != nil {
 			if connected {
 				log.Printf("Connection to UDP server lost: %v. Attempting to reconnect...", err)
@@ -207,27 +207,25 @@ func getUSBIP() string {
 	return "192.168.100.2"
 }
 
-// downmixToMono downmixes interleaved channels to a single mono channel.
-// To prevent extreme attenuation on virtual multi-channel devices (like Pipewire/BlackHole with 16 or 64 channels),
-// we only average the first 2 channels, ignoring extra silent channels.
-func downmixToMono(input []int16, numChannels int) []int16 {
-	if numChannels <= 1 {
-		return input
-	}
-	useChannels := numChannels
-	if useChannels > 2 {
-		useChannels = 2
+// extractStereo extracts the first 2 channels (left and right) from the interleaved input buffer,
+// ignoring any extra channels. If the input device is mono (1 channel), it duplicates the channel
+// to form a stereo buffer.
+func extractStereo(input []int16, numChannels int) []int16 {
+	if numChannels < 2 {
+		stereo := make([]int16, len(input)*2)
+		for i, val := range input {
+			stereo[i*2] = val
+			stereo[i*2+1] = val
+		}
+		return stereo
 	}
 	numFrames := len(input) / numChannels
-	mono := make([]int16, numFrames)
+	stereo := make([]int16, numFrames*2)
 	for f := 0; f < numFrames; f++ {
-		var sum int32
-		for c := 0; c < useChannels; c++ {
-			sum += int32(input[f*numChannels+c])
-		}
-		mono[f] = int16(sum / int32(useChannels))
+		stereo[f*2] = input[f*numChannels]
+		stereo[f*2+1] = input[f*numChannels+1]
 	}
-	return mono
+	return stereo
 }
 
 // int16ToBytes converts an int16 slice to a little-endian byte slice.

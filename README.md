@@ -270,7 +270,7 @@ This method bypasses the `0-byte` storage quota limit imposed on Google Service 
         }
         
         var blob;
-        if (mimeType === "audio/wav") {
+        if (mimeType.indexOf("audio/") === 0) {
           // Decode the Base64 binary payload sent by the Go server
           var bytes = Utilities.base64Decode(content);
           blob = Utilities.newBlob(bytes, mimeType, fileName);
@@ -511,4 +511,13 @@ Follow the logs in real-time (useful for checking transcription/upload progress 
 ```bash
 sudo journalctl -u coral-recorder -f
 ```
+
+### 5. Utility Scripts
+
+The repository contains several helper scripts to automate common configuration tasks:
+
+*   **[setup_audio_aggregator.sh](file:///home/alexandre.bedeschi/dev/coral-recorder-go/setup_audio_aggregator.sh)**: Configures and restores a virtual audio loopback/aggregator device on Linux using PulseAudio/PipeWire. It mixes your physical microphone input and system output (desktop audio) into a single virtual capture device, allowing the recording client to capture both sides of remote calls/meetings. It also sets up a `.desktop` entry in `~/.config/autostart/` to persist this config across reboots.
+*   **[setup_ffmpeg.sh](file:///home/alexandre.bedeschi/dev/coral-recorder-go/setup_ffmpeg.sh)**: Automates downloading a static ARM64 FFmpeg binary on the host and pushes it to the Coral Board via ADB. This activates automatic on-the-fly WAV-to-MP3 (32 kbps mono) compression on the board before uploading, solving storage constraints and guaranteeing files stay under the 50MB limit of the Apps Script gateway.
+*   **[setup_coral_network.sh](file:///home/alexandre.bedeschi/dev/coral-recorder-go/setup_coral_network.sh)**: Configures persistent udev rules and a NetworkManager profile for the USB OTG network link, ensuring the board interface is stably named `coralusb` with a fixed IP range.
+
 

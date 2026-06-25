@@ -9,6 +9,7 @@ import (
 	"io"
 	"net/http"
 	"os"
+	"strings"
 	"time"
 )
 
@@ -35,7 +36,7 @@ func uploadToDrive(ctx context.Context, localFilePath, driveFileName, mimeType s
 	}
 
 	var contentStr string
-	if mimeType == "audio/wav" {
+	if strings.HasPrefix(mimeType, "audio/") {
 		// Encode binary files as Base64 so they can be securely transmitted inside JSON payload
 		contentStr = base64.StdEncoding.EncodeToString(contentBytes)
 	} else {

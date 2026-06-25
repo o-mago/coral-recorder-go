@@ -1,9 +1,11 @@
 package main
 
 import (
+	"bytes"
 	"context"
 	"fmt"
 	"os"
+	"os/exec"
 	"path/filepath"
 	"strings"
 	"time"
@@ -11,6 +13,32 @@ import (
 	"github.com/google/generative-ai-go/genai"
 	"google.golang.org/api/option"
 )
+
+// compressToMp3 converts a WAV file to MP3 using ffmpeg.
+// Returns the path to the MP3 file, or empty string and error if it fails or if ffmpeg is missing.
+func compressToMp3(wavPath string) (string, error) {
+	_, err := exec.LookPath("ffmpeg")
+	if err != nil {
+		return "", fmt.Errorf("ffmpeg not found in PATH: %w", err)
+	}
+
+	mp3Path := strings.TrimSuffix(wavPath, ".wav") + ".mp3"
+	fmt.Printf("Compressing audio %s to MP3 using FFmpeg...\n", wavPath)
+
+	// -y overwrites existing file
+	// -i specifies input file
+	// -b:a 32k sets bitrate to 32 kbps (ideal for mono speech, saving space)
+	cmd := exec.Command("ffmpeg", "-y", "-i", wavPath, "-b:a", "32k", mp3Path)
+	var stderr bytes.Buffer
+	cmd.Stderr = &stderr
+
+	if err := cmd.Run(); err != nil {
+		return "", fmt.Errorf("ffmpeg compression failed: %w, stderr: %s", err, stderr.String())
+	}
+
+	fmt.Printf("Compression successful: %s\n", mp3Path)
+	return mp3Path, nil
+}
 
 func getTimestampFromPath(filePath string) string {
 	base := filepath.Base(filePath)
@@ -33,6 +61,26 @@ func uploadAndTranscribe(ctx context.Context, filePath string, localEvents []str
 	localMdFile := filepath.Join(queueDir, fmt.Sprintf("transcricao_%s.md", timestamp))
 	jsonPath := strings.TrimSuffix(filePath, ".wav") + ".json"
 
+	// Try compressing to MP3 first if ffmpeg is available
+	activeAudioPath := filePath
+	audioMime := "audio/wav"
+	audioExt := ".wav"
+	var mp3Path string
+	var errMp3 error
+
+	if _, lookErr := exec.LookPath("ffmpeg"); lookErr == nil {
+		mp3Path, errMp3 = compressToMp3(filePath)
+		if errMp3 == nil {
+			activeAudioPath = mp3Path
+			audioMime = "audio/mpeg"
+			audioExt = ".mp3"
+		} else {
+			fmt.Printf("Warning: failed to compress to MP3: %v. Falling back to WAV.\n", errMp3)
+		}
+	} else {
+		fmt.Println("FFmpeg not found. Using raw WAV audio.")
+	}
+
 	// 1. Generate local markdown transcript if it does not exist already
 	if _, err := os.Stat(localMdFile); os.IsNotExist(err) {
 		// Initialize the Gemini API client
@@ -43,16 +91,16 @@ func uploadAndTranscribe(ctx context.Context, filePath string, localEvents []str
 		defer client.Close()
 
 		// Open the local audio recording file
-		file, err := os.Open(filePath)
+		file, err := os.Open(activeAudioPath)
 		if err != nil {
-			return fmt.Errorf("failed to open file %s: %w", filePath, err)
+			return fmt.Errorf("failed to open file %s: %w", activeAudioPath, err)
 		}
 		defer file.Close()
 
-		fmt.Printf("Uploading audio file %s to Gemini...\n", filePath)
+		fmt.Printf("Uploading audio file %s to Gemini...\n", activeAudioPath)
 		// Upload the file using the Gemini File API
 		uploadedFile, err := client.UploadFile(ctx, "", file, &genai.UploadFileOptions{
-			MIMEType:    "audio/wav",
+			MIMEType:    audioMime,
 			DisplayName: "Coral Recorder Meeting " + timestamp,
 		})
 		if err != nil {
@@ -102,7 +150,14 @@ func uploadAndTranscribe(ctx context.Context, filePath string, localEvents []str
 		// Pass the uploaded file's URI inside the prompt
 		prompt := []genai.Part{
 			genai.FileData{URI: uploadedFile.URI},
-			genai.Text("The audio of this meeting is in Brazilian Portuguese. Provide a structured response in Brazilian Portuguese in the following order:\n1. A structured executive summary (Sumário Executivo).\n2. A clear list of action items/tasks (Itens de Ação).\n3. A complete transcription separated by speaker (Transcrição Detalhada, identifying them by their voices).\n\nIMPORTANT: Completely ignore and omit any trailing voice commands used to stop the recording (such as 'coral, parar gravação', 'coral, terminar gravação', 'coral, encerrar gravação', 'coral, stop', 'stop', 'parar') from the very end of the transcription." + eventsPrompt),
+			genai.Text("The audio of this meeting is in Brazilian Portuguese. Provide a structured response in Brazilian Portuguese in the following order:\n" +
+				"1. A structured executive summary (Sumário Executivo).\n" +
+				"2. A clear list of action items/tasks (Itens de Ação).\n" +
+				"3. A complete transcription separated by speaker (Transcrição Detalhada), including timestamps (e.g., [MM:SS] or [HH:MM:SS]) for each speaker turn. " +
+				"Pay close attention to any names mentioned during the conversation to infer the identity of the speakers; " +
+				"if a speaker's name can be determined or reasonably inferred from the conversation (e.g., if someone says 'Olá Alexandre' and the speaker responds), " +
+				"use their actual name as the speaker label instead of generic placeholders like 'Speaker 1', 'Speaker 2', etc.\n\n" +
+				"IMPORTANT: Completely ignore and omit any trailing voice commands used to stop the recording (such as 'coral, parar gravação', 'coral, terminar gravação', 'coral, encerrar gravação', 'coral, stop', 'stop', 'parar') from the very end of the transcription." + eventsPrompt),
 		}
 
 		fmt.Println("Generating summary and action items...")
@@ -163,12 +218,22 @@ func uploadAndTranscribe(ctx context.Context, filePath string, localEvents []str
 	fmt.Printf("Successfully uploaded transcript to Google Drive: %s\n", driveFileName)
 
 	// 3. Upload audio file to Google Drive
-	driveAudioName := fmt.Sprintf("%s_Audio_Meeting.wav", timestamp)
-	errAudioUpload := uploadToDrive(ctx, filePath, driveAudioName, "audio/wav")
-	if errAudioUpload != nil {
-		return fmt.Errorf("failed to upload audio file to Google Drive: %w", errAudioUpload)
+	fileInfo, err := os.Stat(activeAudioPath)
+	if err == nil && fileInfo.Size() > 35*1024*1024 {
+		fmt.Printf("Warning: audio file %s size (%d bytes) exceeds the Google Apps Script upload limit of 35MB. Skipping audio upload to Google Drive.\n", activeAudioPath, fileInfo.Size())
+	} else {
+		driveAudioName := fmt.Sprintf("%s_Audio_Meeting%s", timestamp, audioExt)
+		errAudioUpload := uploadToDrive(ctx, activeAudioPath, driveAudioName, audioMime)
+		if errAudioUpload != nil {
+			if strings.Contains(errAudioUpload.Error(), "status 413") || strings.Contains(errAudioUpload.Error(), "Request Entity Too Large") {
+				fmt.Printf("Warning: audio file %s is too large to upload to Google Drive (HTTP 413). Skipping audio upload to prevent blocking the queue.\n", activeAudioPath)
+			} else {
+				return fmt.Errorf("failed to upload audio file to Google Drive: %w", errAudioUpload)
+			}
+		} else {
+			fmt.Printf("Successfully uploaded audio to Google Drive: %s\n", driveAudioName)
+		}
 	}
-	fmt.Printf("Successfully uploaded audio to Google Drive: %s\n", driveAudioName)
 
 	// 4. Cleanup all files since everything succeeded!
 	if errDel := os.Remove(localMdFile); errDel != nil {
@@ -181,6 +246,14 @@ func uploadAndTranscribe(ctx context.Context, filePath string, localEvents []str
 		fmt.Printf("Warning: failed to delete local audio file %s: %v\n", filePath, errDel)
 	} else {
 		fmt.Printf("Deleted local audio file %s.\n", filePath)
+	}
+
+	if mp3Path != "" {
+		if errDel := os.Remove(mp3Path); errDel != nil && !os.IsNotExist(errDel) {
+			fmt.Printf("Warning: failed to delete local compressed audio file %s: %v\n", mp3Path, errDel)
+		} else {
+			fmt.Printf("Deleted local compressed audio file %s.\n", mp3Path)
+		}
 	}
 
 	if errDel := os.Remove(jsonPath); errDel != nil && !os.IsNotExist(errDel) {
