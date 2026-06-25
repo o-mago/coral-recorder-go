@@ -91,7 +91,11 @@ func main() {
 	if err != nil {
 		log.Fatalf("Failed to connect via UDP to %s: %v", serverAddr, err)
 	}
-	defer conn.Close()
+	defer func() {
+		if conn != nil {
+			conn.Close()
+		}
+	}()
 
 	// Use all available input channels (e.g. mic ch1 + BlackHole ch2/ch3 on an Aggregate Device)
 	numChannels := selectedDevice.MaxInputChannels
@@ -121,6 +125,9 @@ func main() {
 	defer stream.Stop()
 
 	log.Printf("Streaming audio over UDP to %s... (%d input channel(s), downmixed to mono)\n", serverAddr, numChannels)
+	connected := true
+	var lastErrPrint time.Time
+
 	for {
 		err = stream.Read()
 		if err != nil {
@@ -130,8 +137,24 @@ func main() {
 		// Downmix all channels to mono by averaging, then send
 		_, err = conn.Write(int16ToBytes(downmixToMono(multiBuffer, numChannels)))
 		if err != nil {
-			log.Printf("Failed to send data over UDP: %v", err)
-			break
+			if connected {
+				log.Printf("Connection to UDP server lost: %v. Attempting to reconnect...", err)
+				connected = false
+			} else if time.Since(lastErrPrint) > 5*time.Second {
+				log.Printf("Still disconnected from UDP server %s, retrying...", serverAddr)
+				lastErrPrint = time.Now()
+			}
+
+			conn.Close()
+			newConn, dialErr := net.Dial("udp", serverAddr)
+			if dialErr == nil {
+				conn = newConn
+				log.Println("Reconnected successfully to UDP server.")
+				connected = true
+			} else {
+				// Sleep a tiny bit to avoid CPU spin if socket creation fails immediately
+				time.Sleep(10 * time.Millisecond)
+			}
 		}
 	}
 }

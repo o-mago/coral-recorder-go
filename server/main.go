@@ -319,9 +319,13 @@ func main() {
 						networkInactivityTimer = time.NewTimer(10 * time.Second)
 						networkTimeoutChan = networkInactivityTimer.C
 					} else if networkInactivityTimer != nil {
-						networkInactivityTimer.Stop()
-						networkInactivityTimer = time.NewTimer(10 * time.Second)
-						networkTimeoutChan = networkInactivityTimer.C
+						if !networkInactivityTimer.Stop() {
+							select {
+							case <-networkInactivityTimer.C:
+							default:
+							}
+						}
+						networkInactivityTimer.Reset(10 * time.Second)
 					}
 					if _, err := stdin.Write(data); err != nil {
 						log.Printf("Error sending network audio to Python processor: %v", err)
@@ -350,6 +354,11 @@ func main() {
 					break SessionLoop
 				}
 			}
+		}
+
+		// Clean up timer to prevent resource leaks
+		if networkInactivityTimer != nil {
+			networkInactivityTimer.Stop()
 		}
 
 		// Signal EOF to Python and wait for it to flush and exit
